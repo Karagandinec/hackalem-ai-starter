@@ -1,14 +1,32 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { getEntities, type Entity } from "../api";
+import {
+  enrichEntities,
+  exportCsvUrl,
+  getEntities,
+  importEntities,
+  type Entity,
+  type EntityFilters,
+} from "../api";
 import { formatNumber } from "./MetricCard";
 
 /**
  * Таблица с фильтрами: период дат, статус, поиск по названию.
  * Фильтрует бэкенд (GET /api/entities), фронт только собирает параметры —
  * так таблица не ломается на больших объёмах.
+ *
+ * showActions=true добавляет панель «импорт CSV / разметить моделью / выгрузка».
+ * На дашборде она не нужна, на странице данных — нужна.
  */
-export default function DataTable({ defaultDays = 30, limit = 50 }: { defaultDays?: number; limit?: number }) {
+export default function DataTable({
+  defaultDays = 30,
+  limit = 50,
+  showActions = false,
+}: {
+  defaultDays?: number;
+  limit?: number;
+  showActions?: boolean;
+}) {
   const [dateFrom, setDateFrom] = useState(daysAgo(defaultDays));
   const [dateTo, setDateTo] = useState(daysAgo(0));
   const [status, setStatus] = useState("");
@@ -16,6 +34,12 @@ export default function DataTable({ defaultDays = 30, limit = 50 }: { defaultDay
   const [rows, setRows] = useState<Entity[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [version, setVersion] = useState(0); // счётчик перезагрузок после действий
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const filters: EntityFilters = { date_from: dateFrom, date_to: dateTo, status, search, limit };
 
   useEffect(() => {
     let cancelled = false;
@@ -32,11 +56,70 @@ export default function DataTable({ defaultDays = 30, limit = 50 }: { defaultDay
     return () => {
       cancelled = true;
     };
-  }, [dateFrom, dateTo, status, search, limit]);
+  }, [dateFrom, dateTo, status, search, limit, version]);
+
+  async function handleImport(file: File) {
+    setBusy(true);
+    setNotice(null);
+    try {
+      const result = await importEntities(file);
+      const details = result.errors.length ? ` Ошибки: ${result.errors.join("; ")}` : "";
+      setNotice(
+        `Загружено ${result.imported}, пропущено ${result.skipped}. ` +
+          `Колонки: ${result.columns_used.join(", ") || "—"}.${details}`,
+      );
+      setVersion((v) => v + 1);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+      if (fileRef.current) fileRef.current.value = ""; // чтобы тот же файл можно было залить снова
+    }
+  }
+
+  async function handleEnrich() {
+    setBusy(true);
+    setNotice(null);
+    try {
+      const result = await enrichEntities({ limit: 10 });
+      const hint = result.status === "fallback" ? " (заглушка: нет OPENAI_API_KEY)" : "";
+      setNotice(`Размечено записей: ${result.processed}${hint}. Потрачено $${result.cost_usd.toFixed(5)}.`);
+      setVersion((v) => v + 1);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <div className="card">
-      <h2>Записи</h2>
+      <div className="page-head" style={{ marginBottom: 10 }}>
+        <h2 style={{ margin: 0 }}>Записи</h2>
+        {showActions && (
+          <div className="actions">
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".csv,text/csv"
+              hidden
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) void handleImport(file);
+              }}
+            />
+            <button className="ghost" disabled={busy} onClick={() => fileRef.current?.click()}>
+              ⭑ Импорт CSV
+            </button>
+            <button disabled={busy} onClick={() => void handleEnrich()}>
+              {busy ? "..." : "✦ Разметить моделью (10)"}
+            </button>
+            <a className="button-link" href={exportCsvUrl(filters)}>
+              ↓ Выгрузить CSV
+            </a>
+          </div>
+        )}
+      </div>
 
       <div className="filters">
         <div className="field">
@@ -80,6 +163,7 @@ export default function DataTable({ defaultDays = 30, limit = 50 }: { defaultDay
       </div>
 
       {error && <div className="error-box">Не удалось загрузить: {error}</div>}
+      {notice && <div className="notice-box">{notice}</div>}
 
       <div className="table-wrap">
         <table>
@@ -92,6 +176,7 @@ export default function DataTable({ defaultDays = 30, limit = 50 }: { defaultDay
               <th>Категория</th>
               <th>Город</th>
               <th className="num">Сумма</th>
+              <th>AI-метка</th>
               <th>Создано</th>
             </tr>
           </thead>
@@ -107,9 +192,26 @@ export default function DataTable({ defaultDays = 30, limit = 50 }: { defaultDay
                 <td className="muted">{row.category ?? "—"}</td>
                 <td className="muted">{row.city ?? "—"}</td>
                 <td className="num">{formatNumber(row.amount)}</td>
+                <td>
+                  {row.ai_label ? (
+                    <span className="badge ai" title={`оценка ${row.ai_score ?? "—"}`}>
+                      {row.ai_label}
+                      {row.ai_score !== null && <span className="muted"> · {row.ai_score}</span>}
+                    </span>
+                  ) : (
+                    <span className="muted">—</span>
+                  )}
+                </td>
                 <td className="muted mono">{row.created_at.slice(0, 16).replace("T", " ")}</td>
               </tr>
             ))}
+            {!loading && rows.length === 0 && (
+              <tr>
+                <td colSpan={9} className="muted" style={{ padding: "18px 10px" }}>
+                  Ничего не найдено. Сбрось фильтры или залей данные: `make seed` либо «Импорт CSV».
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>

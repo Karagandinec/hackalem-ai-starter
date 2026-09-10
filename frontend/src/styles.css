@@ -475,3 +475,43 @@ tbody tr:hover {
     flex-direction: row;
   }
 }
+
+/* --- Панель действий над таблицей ---------------------------------------- */
+
+.actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.button-link {
+  display: inline-block;
+  padding: 9px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.button-link:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.notice-box {
+  border: 1px solid var(--border);
+  background: var(--accent-soft);
+  color: var(--text);
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  margin-bottom: 14px;
+  font-size: 13px;
+}
+
+.badge.ai {
+  color: var(--accent);
+  border-color: rgba(79, 140, 255, 0.4);
+  background: var(--accent-soft);
+}

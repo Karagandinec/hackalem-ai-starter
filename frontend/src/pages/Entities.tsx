@@ -7,10 +7,12 @@ export default function Entities() {
       <div className="page-head">
         <div>
           <h1>Данные</h1>
-          <div className="subtitle">Таблица entities с фильтрами. Переименуй под свой кейс.</div>
+          <div className="subtitle">
+            Таблица entities с фильтрами. Залей свой CSV, размечай записи моделью, выгружай результат.
+          </div>
         </div>
       </div>
-      <DataTable defaultDays={60} limit={200} />
+      <DataTable defaultDays={60} limit={200} showActions />
     </>
   );
 }
