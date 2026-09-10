@@ -1,4 +1,4 @@
-"""Базовые роуты: health-check, демо-логин, CRUD сущностей и событий.
+"""Базовые роуты: health-check, демо-логин, техника, события, дашборд.
 
 Всё, что нужно, чтобы фронт ожил сразу после `make seed`.
 """
@@ -15,11 +15,11 @@ from sqlalchemy.orm import Session
 from app.auth import get_current_user, hash_password, make_token
 from app.config import settings
 from app.db import get_db
-from app.models import Entity, Event, User, utcnow
+from app.models import Asset, Event, User, utcnow
 from app.schemas import (
+    AssetIn,
+    AssetOut,
     DashboardSummary,
-    EntityIn,
-    EntityOut,
     EventIn,
     EventOut,
     ImportResult,
@@ -32,6 +32,11 @@ from app.schemas import (
 
 router = APIRouter()
 
+# Что считаем поломкой, а не плановой остановкой. Правь под кейс.
+BREAKDOWN_TYPES = ("отказ", "внеплановый ремонт", "авария")
+# Техника, которая считается доступной для работы.
+READY_STATUSES = ("в работе", "резерв")
+
 
 # --- Health -----------------------------------------------------------------
 
@@ -40,16 +45,14 @@ router = APIRouter()
 def health(db: Session = Depends(get_db)) -> dict:
     """Живой ли сервер и видит ли он базу. Фронт дергает это при старте."""
     try:
-        entities = db.scalar(select(func.count(Entity.id))) or 0
-        db_ok = True
+        assets = db.scalar(select(func.count(Asset.id))) or 0
     except Exception as exc:  # noqa: BLE001 — health не должен падать, он должен рассказать
-        entities, db_ok = 0, False
-        return {"status": "degraded", "db": db_ok, "error": str(exc), "ai_enabled": settings.ai_enabled}
+        return {"status": "degraded", "db": False, "error": str(exc), "ai_enabled": settings.ai_enabled}
     return {
         "status": "ok",
         "app": settings.app_name,
-        "db": db_ok,
-        "entities": entities,
+        "db": True,
+        "assets": assets,
         "ai_enabled": settings.ai_enabled,  # False = работаем на заглушке
         "model": settings.openai_model,
         "time": utcnow().isoformat(timespec="seconds"),
@@ -78,7 +81,7 @@ def list_users(db: Session = Depends(get_db)) -> list[User]:
     return list(db.scalars(select(User).order_by(User.id)).all())
 
 
-# --- Entities ---------------------------------------------------------------
+# --- Техника ----------------------------------------------------------------
 
 
 def _filtered(
@@ -86,64 +89,70 @@ def _filtered(
     date_to: str | None,
     status_filter: str | None,
     type_filter: str | None,
+    site: str | None,
     search: str | None,
 ) -> Select:
     """Общий набор фильтров для списка и для выгрузки — чтобы они не разъехались."""
-    stmt = select(Entity)
+    stmt = select(Asset)
     if status_filter:
-        stmt = stmt.where(Entity.status == status_filter)
+        stmt = stmt.where(Asset.status == status_filter)
     if type_filter:
-        stmt = stmt.where(Entity.type == type_filter)
+        stmt = stmt.where(Asset.type == type_filter)
+    if site:
+        stmt = stmt.where(Asset.site == site)
     if search:
-        stmt = stmt.where(Entity.name.ilike(f"%{search}%"))
+        stmt = stmt.where(Asset.name.ilike(f"%{search}%"))
     if date_from:
-        stmt = stmt.where(Entity.created_at >= datetime.fromisoformat(date_from))
+        stmt = stmt.where(Asset.created_at >= datetime.fromisoformat(date_from))
     if date_to:
-        stmt = stmt.where(Entity.created_at <= datetime.fromisoformat(date_to) + timedelta(days=1))
-    return stmt.order_by(Entity.created_at.desc())
+        stmt = stmt.where(Asset.created_at <= datetime.fromisoformat(date_to) + timedelta(days=1))
+    return stmt.order_by(Asset.engine_hours.desc())
 
 
-@router.get("/entities", response_model=list[EntityOut], tags=["entities"])
-def list_entities(
+@router.get("/assets", response_model=list[AssetOut], tags=["assets"])
+def list_assets(
     db: Session = Depends(get_db),
     date_from: str | None = Query(None, description="YYYY-MM-DD"),
     date_to: str | None = Query(None, description="YYYY-MM-DD"),
     status_filter: str | None = Query(None, alias="status"),
     type_filter: str | None = Query(None, alias="type"),
+    site: str | None = None,
     search: str | None = None,
     limit: int = Query(100, le=1000),
     offset: int = 0,
-) -> list[Entity]:
-    """Список с фильтрами — под таблицу на дашборде."""
-    stmt = _filtered(date_from, date_to, status_filter, type_filter, search).limit(limit).offset(offset)
+) -> list[Asset]:
+    """Список техники с фильтрами. Сортировка по наработке: самое изношенное сверху."""
+    stmt = _filtered(date_from, date_to, status_filter, type_filter, site, search).limit(limit).offset(offset)
     return list(db.scalars(stmt).all())
 
 
-@router.post("/entities", response_model=EntityOut, status_code=201, tags=["entities"])
-def create_entity(payload: EntityIn, db: Session = Depends(get_db)) -> Entity:
-    entity = Entity(**payload.model_dump())
-    db.add(entity)
+@router.post("/assets", response_model=AssetOut, status_code=201, tags=["assets"])
+def create_asset(payload: AssetIn, db: Session = Depends(get_db)) -> Asset:
+    asset = Asset(**payload.model_dump())
+    db.add(asset)
     db.commit()
-    db.refresh(entity)
-    return entity
+    db.refresh(asset)
+    return asset
 
 
-# Колонки файла узнаём по этим синонимам: датасет на хакатоне почти всегда
+# Колонки файла узнаём по этим синонимам: выгрузка из 1С или АСУ почти всегда
 # приходит с русскими заголовками, и переименовывать их руками — потеря времени.
 IMPORT_ALIASES: dict[str, tuple[str, ...]] = {
-    "name": ("name", "название", "наименование", "имя", "клиент", "title"),
-    "type": ("type", "тип", "вид"),
+    "name": ("name", "название", "наименование", "борт", "бортовой номер", "техника", "единица", "title"),
+    "type": ("type", "тип", "вид", "тип техники"),
     "status": ("status", "статус", "состояние"),
-    "category": ("category", "категория", "группа"),
-    "city": ("city", "город", "регион"),
-    "amount": ("amount", "сумма", "цена", "стоимость", "price", "total"),
+    "brand": ("brand", "марка", "производитель", "модель"),
+    "site": ("site", "участок", "объект", "разрез", "карьер", "площадка", "город"),
+    "output_tonnes": ("output_tonnes", "выработка", "тонн", "тоннаж", "добыча"),
+    "engine_hours": ("engine_hours", "наработка", "моточасы", "мч", "часы"),
     "description": ("description", "описание", "комментарий", "примечание", "comment"),
 }
+NUMERIC_FIELDS = ("output_tonnes", "engine_hours")
 
 
-@router.post("/entities/import", response_model=ImportResult, tags=["entities"])
-async def import_entities(file: UploadFile = File(...), db: Session = Depends(get_db)) -> ImportResult:
-    """Загрузка CSV в таблицу entities.
+@router.post("/assets/import", response_model=ImportResult, tags=["assets"])
+async def import_assets(file: UploadFile = File(...), db: Session = Depends(get_db)) -> ImportResult:
+    """Загрузка CSV с техникой.
 
     Умеет то, обо что обычно спотыкаются в спешке: BOM от Excel, разделитель `;`
     вместо запятой и русские заголовки колонок. Неизвестные колонки игнорируются,
@@ -171,7 +180,7 @@ async def import_entities(file: UploadFile = File(...), db: Session = Depends(ge
         return ImportResult(
             imported=0,
             skipped=0,
-            errors=[f"Не нашёл колонку с названием. Заголовки файла: {reader.fieldnames}"],
+            errors=[f"Не нашёл колонку с названием техники. Заголовки файла: {reader.fieldnames}"],
             columns_used=[],
         )
 
@@ -183,13 +192,16 @@ async def import_entities(file: UploadFile = File(...), db: Session = Depends(ge
                 value = (row.get(column) or "").strip()
                 if not value:
                     continue
-                payload[field] = float(value.replace(" ", "").replace(",", ".")) if field == "amount" else value
+                if field in NUMERIC_FIELDS:
+                    payload[field] = float(value.replace(" ", "").replace(",", "."))
+                else:
+                    payload[field] = value
             if not payload.get("name"):
                 skipped += 1
                 continue
-            payload.setdefault("type", "imported")
-            payload.setdefault("status", "new")
-            db.add(Entity(**payload))
+            payload.setdefault("type", "не указан")
+            payload.setdefault("status", "в работе")
+            db.add(Asset(**payload))
             imported += 1
         except (ValueError, TypeError) as exc:
             skipped += 1
@@ -200,81 +212,84 @@ async def import_entities(file: UploadFile = File(...), db: Session = Depends(ge
     return ImportResult(imported=imported, skipped=skipped, errors=errors, columns_used=sorted(set(mapping.values())))
 
 
-@router.get("/entities/export.csv", tags=["entities"])
-def export_entities(
+@router.get("/assets/export.csv", tags=["assets"])
+def export_assets(
     db: Session = Depends(get_db),
     date_from: str | None = Query(None, description="YYYY-MM-DD"),
     date_to: str | None = Query(None, description="YYYY-MM-DD"),
     status_filter: str | None = Query(None, alias="status"),
     type_filter: str | None = Query(None, alias="type"),
+    site: str | None = None,
     search: str | None = None,
     limit: int = Query(5000, le=50000),
 ) -> StreamingResponse:
-    """Выгрузка отфильтрованных записей в CSV — те же фильтры, что у списка."""
-    rows = db.scalars(_filtered(date_from, date_to, status_filter, type_filter, search).limit(limit)).all()
+    """Выгрузка отфильтрованной техники в CSV — те же фильтры, что у списка."""
+    rows = db.scalars(_filtered(date_from, date_to, status_filter, type_filter, site, search).limit(limit)).all()
 
     buffer = io.StringIO()
     # BOM и `;` — чтобы файл открывался в русском Excel двойным щелчком, без танцев.
-    buffer.write("\ufeff")
+    buffer.write("﻿")
     writer = csv.writer(buffer, delimiter=";", lineterminator="\n")
-    writer.writerow(["id", "name", "type", "status", "category", "city", "amount", "ai_label", "ai_score", "created_at"])
+    writer.writerow(
+        ["id", "техника", "тип", "статус", "марка", "участок", "выработка_т", "наработка_мч", "риск", "оценка"]
+    )
     for row in rows:
         writer.writerow([
-            row.id, row.name, row.type, row.status, row.category or "", row.city or "",
-            row.amount, row.ai_label or "", row.ai_score if row.ai_score is not None else "",
-            row.created_at.isoformat(sep=" ", timespec="seconds"),
+            row.id, row.name, row.type, row.status, row.brand or "", row.site or "",
+            row.output_tonnes, row.engine_hours, row.ai_label or "",
+            row.ai_score if row.ai_score is not None else "",
         ])
     buffer.seek(0)
 
     return StreamingResponse(
         iter([buffer.getvalue()]),
         media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": 'attachment; filename="entities.csv"'},
+        headers={"Content-Disposition": 'attachment; filename="assets.csv"'},
     )
 
 
-@router.get("/entities/{entity_id}", response_model=EntityOut, tags=["entities"])
-def get_entity(entity_id: int, db: Session = Depends(get_db)) -> Entity:
-    entity = db.get(Entity, entity_id)
-    if entity is None:
+@router.get("/assets/{asset_id}", response_model=AssetOut, tags=["assets"])
+def get_asset(asset_id: int, db: Session = Depends(get_db)) -> Asset:
+    asset = db.get(Asset, asset_id)
+    if asset is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Не найдено")
-    return entity
+    return asset
 
 
-@router.patch("/entities/{entity_id}", response_model=EntityOut, tags=["entities"])
-def update_entity(entity_id: int, payload: EntityIn, db: Session = Depends(get_db)) -> Entity:
-    entity = db.get(Entity, entity_id)
-    if entity is None:
+@router.patch("/assets/{asset_id}", response_model=AssetOut, tags=["assets"])
+def update_asset(asset_id: int, payload: AssetIn, db: Session = Depends(get_db)) -> Asset:
+    asset = db.get(Asset, asset_id)
+    if asset is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Не найдено")
     for key, value in payload.model_dump(exclude_unset=True).items():
-        setattr(entity, key, value)
+        setattr(asset, key, value)
     db.commit()
-    db.refresh(entity)
-    return entity
+    db.refresh(asset)
+    return asset
 
 
-@router.delete("/entities/{entity_id}", status_code=204, tags=["entities"])
-def delete_entity(entity_id: int, db: Session = Depends(get_db)) -> None:
-    entity = db.get(Entity, entity_id)
-    if entity is None:
+@router.delete("/assets/{asset_id}", status_code=204, tags=["assets"])
+def delete_asset(asset_id: int, db: Session = Depends(get_db)) -> None:
+    asset = db.get(Asset, asset_id)
+    if asset is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Не найдено")
-    db.delete(entity)
+    db.delete(asset)
     db.commit()
 
 
-# --- Events -----------------------------------------------------------------
+# --- События ----------------------------------------------------------------
 
 
 @router.get("/events", response_model=list[EventOut], tags=["events"])
 def list_events(
     db: Session = Depends(get_db),
-    entity_id: int | None = None,
+    asset_id: int | None = None,
     type_filter: str | None = Query(None, alias="type"),
     limit: int = Query(100, le=1000),
 ) -> list[Event]:
     stmt = select(Event)
-    if entity_id:
-        stmt = stmt.where(Event.entity_id == entity_id)
+    if asset_id:
+        stmt = stmt.where(Event.asset_id == asset_id)
     if type_filter:
         stmt = stmt.where(Event.type == type_filter)
     return list(db.scalars(stmt.order_by(Event.created_at.desc()).limit(limit)).all())
@@ -294,34 +309,34 @@ def create_event(payload: EventIn, db: Session = Depends(get_db)) -> Event:
 
 @router.get("/dashboard", response_model=DashboardSummary, tags=["dashboard"])
 def dashboard(db: Session = Depends(get_db), days: int = Query(30, ge=1, le=365)) -> DashboardSummary:
-    """4 карточки-метрики + ряд для графика. Меняй под свой кейс прямо здесь."""
+    """4 карточки-метрики + ряд для графика простоев. Меняй под свой кейс здесь."""
     now = utcnow()
     period_start = now - timedelta(days=days)
     prev_start = period_start - timedelta(days=days)
 
-    def count_between(start: datetime, end: datetime) -> int:
-        return db.scalar(
-            select(func.count(Entity.id)).where(Entity.created_at >= start, Entity.created_at < end)
-        ) or 0
-
-    def sum_between(start: datetime, end: datetime) -> float:
+    def downtime_between(start: datetime, end: datetime) -> float:
         return float(
             db.scalar(
-                select(func.coalesce(func.sum(Entity.amount), 0.0)).where(
-                    Entity.created_at >= start, Entity.created_at < end
+                select(func.coalesce(func.sum(Event.downtime_hours), 0.0)).where(
+                    Event.created_at >= start, Event.created_at < end
                 )
             )
             or 0.0
         )
 
-    current_count = count_between(period_start, now)
-    previous_count = count_between(prev_start, period_start)
-    current_sum = sum_between(period_start, now)
-    previous_sum = sum_between(prev_start, period_start)
-    done_count = db.scalar(
-        select(func.count(Entity.id)).where(Entity.created_at >= period_start, Entity.status == "done")
-    ) or 0
-    events_count = db.scalar(select(func.count(Event.id)).where(Event.created_at >= period_start)) or 0
+    def breakdowns_between(start: datetime, end: datetime) -> int:
+        return db.scalar(
+            select(func.count(Event.id)).where(
+                Event.created_at >= start, Event.created_at < end, Event.type.in_(BREAKDOWN_TYPES)
+            )
+        ) or 0
+
+    fleet_total = db.scalar(select(func.count(Asset.id))) or 0
+    fleet_ready = db.scalar(select(func.count(Asset.id)).where(Asset.status.in_(READY_STATUSES))) or 0
+    output_now = float(db.scalar(select(func.coalesce(func.sum(Asset.output_tonnes), 0.0))) or 0.0)
+
+    downtime_now, downtime_prev = downtime_between(period_start, now), downtime_between(prev_start, period_start)
+    breakdowns_now, breakdowns_prev = breakdowns_between(period_start, now), breakdowns_between(prev_start, period_start)
 
     def delta(current: float, previous: float) -> float | None:
         if not previous:
@@ -329,27 +344,42 @@ def dashboard(db: Session = Depends(get_db), days: int = Query(30, ge=1, le=365)
         return round((current - previous) / previous * 100, 1)
 
     cards = [
-        MetricCard(key="entities", label="Записей за период", value=current_count, delta_pct=delta(current_count, previous_count)),
-        MetricCard(key="amount", label="Сумма", value=round(current_sum), unit="₸", delta_pct=delta(current_sum, previous_sum)),
         MetricCard(
-            key="conversion",
-            label="Доля закрытых",
-            value=round(done_count / current_count * 100, 1) if current_count else 0.0,
+            key="readiness",
+            label="Техника на ходу",
+            value=round(fleet_ready / fleet_total * 100, 1) if fleet_total else 0.0,
             unit="%",
         ),
-        MetricCard(key="events", label="Событий", value=events_count),
+        MetricCard(
+            key="downtime",
+            label="Простои за период",
+            value=round(downtime_now),
+            unit="ч",
+            delta_pct=delta(downtime_now, downtime_prev),
+            lower_is_better=True,
+        ),
+        MetricCard(
+            key="breakdowns",
+            label="Отказов и аварий",
+            value=breakdowns_now,
+            delta_pct=delta(breakdowns_now, breakdowns_prev),
+            lower_is_better=True,
+        ),
+        MetricCard(key="output", label="Выработка за смену", value=round(output_now), unit="т"),
     ]
 
     rows = db.execute(
         select(
-            func.strftime("%Y-%m-%d", Entity.created_at).label("day"),
-            func.count(Entity.id),
-            func.coalesce(func.sum(Entity.amount), 0.0),
+            func.strftime("%Y-%m-%d", Event.created_at).label("day"),
+            func.coalesce(func.sum(Event.downtime_hours), 0.0),
+            func.count(Event.id),
         )
-        .where(Entity.created_at >= period_start)
+        .where(Event.created_at >= period_start)
         .group_by("day")
         .order_by("day")
     ).all()
 
-    timeseries = [TimeseriesPoint(date=day, count=count, amount=round(float(amount), 2)) for day, count, amount in rows]
+    timeseries = [
+        TimeseriesPoint(date=day, downtime_hours=round(float(hours), 1), events=count) for day, hours, count in rows
+    ]
     return DashboardSummary(cards=cards, timeseries=timeseries)

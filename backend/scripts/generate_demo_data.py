@@ -1,12 +1,16 @@
-"""Генератор реалистичных демо-данных.
+"""Генератор демо-данных: парк техники на угольном разрезе и события с ней.
 
-Не просто рандом: есть недельная сезонность (в выходные меньше), тренд роста
-к текущей дате, воронка статусов, суммы зависят от категории, у части записей
-есть события. На графике это выглядит как настоящие данные, а не как шум.
+Не просто рандом. Заложены зависимости, которые видно на дашборде и за которые
+модели есть чем зацепиться:
+  * чем больше наработка (моточасы), тем чаще отказы — основа для предиктивки;
+  * разрез работает круглосуточно, поэтому недельной «ямы» нет, но есть
+    несколько тяжёлых дней с крупными простоями (авария, метель);
+  * выработка зависит от типа техники: возит самосвал, а буровой станок не возит;
+  * техника не «в работе» тонны в эту смену не выдаёт.
 
 Отдельно от seed.py, чтобы данные можно было генерировать и в тестах:
     from scripts.generate_demo_data import build_dataset
-    data = build_dataset(entities=400)
+    data = build_dataset(assets=140)
 
 Запуск как скрипта печатает сводку, ничего не записывая:
     python scripts/generate_demo_data.py
@@ -19,83 +23,76 @@ from datetime import datetime, timedelta, timezone
 
 RANDOM_SEED = 42  # фиксируем, чтобы демо было одинаковым на всех ноутбуках команды
 
-FIRST_NAMES = [
-    "Айгерим", "Данияр", "Мадина", "Ерлан", "Алия", "Тимур", "Асель", "Нурлан",
-    "Камила", "Арман", "Дана", "Санжар", "Жанна", "Бекзат", "Айсулу", "Руслан",
-    "Динара", "Олжас", "Сабина", "Максим", "Ольга", "Игорь", "Елена", "Виталий",
-]
-LAST_NAMES = [
-    "Сатпаев", "Абдрахманов", "Ким", "Нурланов", "Есенов", "Бекова", "Жумабаев",
-    "Оспанов", "Ахметова", "Тулегенов", "Сериков", "Иванов", "Петрова", "Мусин",
-    "Куанышев", "Тлеуберди", "Смагулов", "Байжанов", "Дюсенов", "Каримова",
-]
-CITIES = [
-    ("Астана", 0.34), ("Алматы", 0.30), ("Шымкент", 0.11), ("Караганда", 0.09),
-    ("Актобе", 0.06), ("Атырау", 0.05), ("Павлодар", 0.03), ("Костанай", 0.02),
-]
-CATEGORIES = [
-    # (категория, доля, средний чек, разброс)
-    ("Консультация", 0.30, 15_000, 6_000),
-    ("Подписка", 0.25, 45_000, 15_000),
-    ("Доставка", 0.20, 8_000, 3_500),
-    ("Оборудование", 0.15, 180_000, 70_000),
-    ("Обучение", 0.10, 65_000, 25_000),
-]
-TYPES = ["заявка", "заказ", "обращение", "сделка"]
-STATUSES = [("new", 0.22), ("in_progress", 0.28), ("done", 0.40), ("cancelled", 0.10)]
-SOURCES = ["instagram", "google", "2gis", "сарафан", "сайт", "whatsapp"]
-EVENT_TYPES = ["звонок", "сообщение", "визит", "оплата", "смена статуса", "жалоба"]
-COMMENTS = [
-    "Клиент перезвонит сам",
-    "Уточнили адрес доставки",
-    "Просит счёт на юрлицо",
-    "Оплата прошла картой",
-    "Перенесли на следующую неделю",
-    "Не отвечает второй день",
-    "Оставил положительный отзыв",
-    "Нужна доработка по срокам",
+# (тип, марки, доля парка, тонн за смену, множитель риска отказа)
+FLEET = [
+    ("самосвал", ("БелАЗ-75306", "БелАЗ-7555", "Caterpillar 777"), 0.40, 900, 1.0),
+    ("экскаватор", ("Komatsu PC1250", "Hitachi EX1200", "ЭКГ-10"), 0.18, 0, 1.3),
+    ("буровой станок", ("Sandvik DR412i", "Atlas Copco PV-271", "СБШ-250МНА"), 0.12, 0, 1.2),
+    ("бульдозер", ("Komatsu D375A", "Caterpillar D9R", "Т-35.01"), 0.14, 0, 0.9),
+    ("конвейер", ("КЛМ-1200", "ЛКЛ-1000"), 0.08, 0, 0.7),
+    ("насосная установка", ("ЦНС-300", "ГрТ-1600"), 0.08, 0, 0.6),
 ]
 
+SITES = [
+    ("Разрез «Восточный»", 0.34),
+    ("Разрез «Северный»", 0.26),
+    ("Карьер «Жайрем»", 0.18),
+    ("Шахта «Центральная»", 0.14),
+    ("Обогатительная фабрика", 0.08),
+]
 
-CATEGORIES_WEIGHTED = [(name, weight) for name, weight, _avg, _spread in CATEGORIES]
-CATEGORY_PRICE = {name: (avg, spread) for name, _weight, avg, spread in CATEGORIES}
+STATUSES = [("в работе", 0.62), ("ТО", 0.12), ("в ремонте", 0.14), ("простой", 0.07), ("резерв", 0.05)]
+
+# (тип события, доля, диапазон часов простоя)
+EVENT_TYPES = [
+    ("отказ", 0.26, (4, 36)),
+    ("внеплановый ремонт", 0.20, (6, 48)),
+    ("плановое ТО", 0.24, (3, 12)),
+    ("простой по погоде", 0.12, (2, 14)),
+    ("простой по организации", 0.10, (1, 6)),
+    ("нарушение ТБ", 0.05, (0, 2)),
+    ("авария", 0.03, (24, 96)),
+]
+
+FAILURE_REASONS = [
+    "течь гидравлики стрелы",
+    "пробой шины заднего моста",
+    "перегрев ДВС, сработала защита",
+    "износ футеровки кузова",
+    "обрыв троса подъёмного механизма",
+    "выход из строя топливного насоса",
+    "трещина в раме, требуется сварка",
+    "отказ пневмосистемы тормозов",
+    "износ бурового става",
+    "заклинил редуктор поворота",
+]
+ROUTINE_REASONS = [
+    "ТО-2 по регламенту, 250 моточасов",
+    "замена масла и фильтров",
+    "плановая диагностика ходовой",
+    "нет самосвалов под погрузку",
+    "метель, работы на уступе остановлены",
+    "ожидание автотопливозаправщика",
+    "смена экипажа задержана",
+    "проверка средств защиты на участке",
+]
 
 
 def _weighted(items: list[tuple], rnd: random.Random):
-    values = [i[0] for i in items]
-    weights = [i[1] for i in items]
-    return rnd.choices(values, weights=weights, k=1)[0]
-
-
-def _person(rnd: random.Random) -> str:
-    return f"{rnd.choice(FIRST_NAMES)} {rnd.choice(LAST_NAMES)}"
+    return rnd.choices([i[0] for i in items], weights=[i[1] for i in items], k=1)[0]
 
 
 def _created_at(rnd: random.Random, days: int, now: datetime) -> datetime:
-    """Дата с недельной сезонностью и ростом к сегодняшнему дню."""
-    for _ in range(30):
-        # mode=0 => чем ближе к сегодня, тем плотнее записи: на графике виден рост.
-        # Диапазон берём шире окна и лишнее отбрасываем — так рост плавный
-        # (около +50% к прошлому месяцу), а не вертикальная стена.
-        day_offset = int(rnd.triangular(0, days * 1.6, 0))
-        if day_offset >= days:
-            continue
-        day = now - timedelta(days=day_offset)
-        if day.weekday() >= 5 and rnd.random() > 0.45:
-            continue  # в выходные активность ниже
-        candidate = day.replace(
-            hour=rnd.choices(range(8, 22), weights=[1, 2, 4, 6, 7, 7, 6, 6, 7, 8, 6, 4, 3, 2])[0],
-            minute=rnd.randrange(60),
-            second=rnd.randrange(60),
-            microsecond=0,
-        )
-        if candidate <= now:  # записей из будущего быть не должно
-            return candidate
-    return now - timedelta(hours=rnd.randrange(1, 24))
+    """Равномерно по суткам: разрез работает в три смены, ночного провала почти нет."""
+    day_offset = rnd.randrange(days)
+    candidate = (now - timedelta(days=day_offset)).replace(
+        hour=rnd.randrange(24), minute=rnd.randrange(60), second=rnd.randrange(60), microsecond=0
+    )
+    return min(candidate, now)
 
 
-def build_dataset(entities: int = 400, days: int = 60, seed: int = RANDOM_SEED) -> dict:
-    """Возвращает {"users": [...], "entities": [...], "events": [...]} — обычные dict,
+def build_dataset(assets: int = 140, days: int = 60, seed: int = RANDOM_SEED) -> dict:
+    """Возвращает {"users": [...], "assets": [...], "events": [...]} — обычные dict,
     чтобы seed.py просто раскидал их по моделям."""
     rnd = random.Random(seed)
     # Наивный UTC — как и во всех моделях (app/models.utcnow). Локальное время
@@ -103,68 +100,82 @@ def build_dataset(entities: int = 400, days: int = 60, seed: int = RANDOM_SEED) 
     now = datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0)
 
     users = [
-        {"email": "demo@hackalem.kz", "name": "Демо Пользователь", "role": "admin", "password": "demo"},
-        {"email": "manager@hackalem.kz", "name": "Асель Бекова", "role": "manager", "password": "manager"},
-        {"email": "operator@hackalem.kz", "name": "Данияр Ким", "role": "user", "password": "operator"},
+        {"email": "demo@hackalem.kz", "name": "Демо Диспетчер", "role": "диспетчер", "password": "demo"},
+        {"email": "master@hackalem.kz", "name": "Ерлан Сериков", "role": "мастер", "password": "master"},
+        {"email": "mechanic@hackalem.kz", "name": "Виктор Кузнецов", "role": "механик", "password": "mechanic"},
     ]
 
-    entity_rows: list[dict] = []
+    # Пара тяжёлых дней: крупная авария и метель. На графике простоев видны пики,
+    # а агенту есть что найти в ответ на «что случилось на прошлой неделе».
+    bad_days = {rnd.randrange(3, days // 2), rnd.randrange(days // 2, days - 2)}
+
+    fleet_shares = [(item[0], item[2]) for item in FLEET]
+    spec = {item[0]: item for item in FLEET}
+
+    asset_rows: list[dict] = []
     event_rows: list[dict] = []
 
-    for index in range(entities):
-        category = _weighted(CATEGORIES_WEIGHTED, rnd)
-        avg, spread = CATEGORY_PRICE[category]
-        created = _created_at(rnd, days, now)
+    for index in range(assets):
+        asset_type = _weighted(fleet_shares, rnd)
+        _, brands, _, tonnes_per_shift, risk_factor = spec[asset_type]
+        brand_full = rnd.choice(brands)
         status = _weighted(STATUSES, rnd)
-        # Свежие записи чаще ещё в работе, старые — уже закрыты. Так воронка выглядит живой.
-        if (now - created).days < 3 and status == "done" and rnd.random() < 0.6:
-            status = rnd.choice(["new", "in_progress"])
+        engine_hours = round(rnd.triangular(500, 32000, 9000))
 
-        amount = max(1000, round(rnd.gauss(avg, spread) / 500) * 500)
-        if status == "cancelled":
-            amount = 0.0  # отменённые не приносят денег
+        # Выработка: только то, что реально возит, и только если техника на ходу.
+        output = 0.0
+        if tonnes_per_shift and status == "в работе":
+            output = max(0.0, float(round(rnd.gauss(tonnes_per_shift, tonnes_per_shift * 0.18) / 10) * 10))
 
-        entity_rows.append(
+        asset_rows.append(
             {
                 "index": index,
-                "name": _person(rnd),
-                "type": rnd.choice(TYPES),
+                "name": f"{brand_full} №{100 + index}",
+                "type": asset_type,
                 "status": status,
-                "category": category,
-                "city": _weighted(CITIES, rnd),
-                "amount": float(amount),
-                "description": f"{category.lower()} · источник: {rnd.choice(SOURCES)}",
+                "brand": brand_full.split()[0],
+                "site": _weighted(SITES, rnd),
+                "output_tonnes": output,
+                "engine_hours": float(engine_hours),
+                "description": f"{asset_type}, наработка {engine_hours} мч",
                 "owner_index": rnd.randrange(len(users)),
-                "created_at": created,
+                "created_at": now - timedelta(days=rnd.randrange(days, days * 6)),  # в парке давно
             }
         )
 
-        # 0-3 события на запись, чем «дальше» статус, тем больше активности
-        event_count = {"new": 0, "in_progress": 2, "done": 3, "cancelled": 1}[status]
-        event_count = max(0, event_count + rnd.choice([-1, 0, 0, 1]))
-        for step in range(event_count):
-            offset_hours = rnd.randrange(1, max(2, (now - created).days * 24 or 2))
+        # Чем выше наработка и «капризнее» тип, тем больше событий у единицы.
+        wear = engine_hours / 32000
+        expected = 1 + wear * 6 * risk_factor
+        for _ in range(max(0, int(rnd.gauss(expected, 1.2)))):
+            event_type = _weighted([(e[0], e[1]) for e in EVENT_TYPES], rnd)
+            low, high = next(e[2] for e in EVENT_TYPES if e[0] == event_type)
+            created = _created_at(rnd, days, now)
+            hours = round(rnd.uniform(low, high), 1)
+            if (now - created).days in bad_days:
+                hours = round(hours * rnd.uniform(1.8, 3.0), 1)  # тяжёлый день
+            breakdown = event_type in ("отказ", "внеплановый ремонт", "авария")
             event_rows.append(
                 {
-                    "entity_index": index,
+                    "asset_index": index,
                     "user_index": rnd.randrange(len(users)),
-                    "type": rnd.choice(EVENT_TYPES),
-                    "status": "done" if step < event_count - 1 else rnd.choice(["done", "pending"]),
-                    "value": float(rnd.randrange(0, 5000, 250)),
-                    "comment": rnd.choice(COMMENTS),
-                    "created_at": min(now, created + timedelta(hours=offset_hours)),
+                    "type": event_type,
+                    "status": rnd.choices(["закрыто", "в работе"], weights=[0.85, 0.15])[0],
+                    "downtime_hours": hours,
+                    "comment": rnd.choice(FAILURE_REASONS if breakdown else ROUTINE_REASONS),
+                    "created_at": created,
                 }
             )
 
-    return {"users": users, "entities": entity_rows, "events": event_rows}
-
+    return {"users": users, "assets": asset_rows, "events": event_rows}
 
 
 if __name__ == "__main__":
     data = build_dataset()
-    total_amount = sum(e["amount"] for e in data["entities"])
-    print(f"users:    {len(data['users'])}")
-    print(f"entities: {len(data['entities'])}")
-    print(f"events:   {len(data['events'])}")
-    print(f"сумма:    {total_amount:,.0f} ₸".replace(",", " "))
+    downtime = sum(e["downtime_hours"] for e in data["events"])
+    output = sum(a["output_tonnes"] for a in data["assets"])
+    print(f"users:      {len(data['users'])}")
+    print(f"техника:    {len(data['assets'])}")
+    print(f"события:    {len(data['events'])}")
+    print(f"простои:    {downtime:,.0f} ч".replace(",", " "))
+    print(f"выработка:  {output:,.0f} т за смену".replace(",", " "))
     print("Ничего не записано — это только предпросмотр. Запись в базу: python scripts/seed.py")

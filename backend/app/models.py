@@ -1,11 +1,16 @@
-"""Три универсальные модели под переименование + служебные таблицы AI.
+"""Модели под трек «Добывающая промышленность».
 
-Идея: кейс хакатона заранее неизвестен, поэтому модели намеренно общие.
-Когда кейс объявят — переименуй прямо здесь:
-    Entity -> Order / Patient / Property / Vacancy ...
-    Event  -> Delivery / Visit / Viewing / Interview ...
-Поля name/type/status/category/amount/meta_json подходят почти под любой кейс,
-лишнее удаляй, недостающее добавляй. Миграций нет — просто `make seed` заново.
+Предметка: парк техники на разрезе/карьере и события с ней.
+    Asset — единица техники: самосвал, экскаватор, буровой станок, конвейер.
+    Event — что с ней произошло: отказ, простой, ТО, авария, нарушение ТБ.
+    User  — сотрудник: механик, мастер участка, диспетчер.
+
+Конкретный кейс внутри трека объявляют на площадке, поэтому поля намеренно
+широкие. Если кейс окажется, скажем, про логистику руды — переименуй Asset
+в Truck/Route прямо здесь и прогони `make seed`, миграций нет.
+
+Разметка моделью (`ai_label`, `ai_score`) заточена под предиктивное
+обслуживание: «риск отказа» и оценка от 0 до 1.
 """
 
 from datetime import datetime, timezone
@@ -23,61 +28,64 @@ def utcnow() -> datetime:
 
 
 class User(Base):
-    """Пользователь. Авторизация демо-уровня, см. app/auth.py."""
+    """Сотрудник. Авторизация демо-уровня, см. app/auth.py."""
 
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(255))
-    role: Mapped[str] = mapped_column(String(50), default="user")  # user | manager | admin
+    role: Mapped[str] = mapped_column(String(50), default="механик")  # механик | мастер | диспетчер | админ
     password_hash: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
 
-    entities: Mapped[list["Entity"]] = relationship(back_populates="owner")
+    assets: Mapped[list["Asset"]] = relationship(back_populates="owner")
 
 
-class Entity(Base):
-    """Главный объект предметной области: заказ, заявка, объект, клиент..."""
+class Asset(Base):
+    """Единица техники на участке."""
 
-    __tablename__ = "entities"
+    __tablename__ = "assets"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[str] = mapped_column(String(255), index=True)
-    type: Mapped[str] = mapped_column(String(50), index=True)
-    status: Mapped[str] = mapped_column(String(50), index=True, default="new")
-    category: Mapped[str | None] = mapped_column(String(100), index=True, default=None)
-    city: Mapped[str | None] = mapped_column(String(100), default=None)
-    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    name: Mapped[str] = mapped_column(String(255), index=True)  # бортовой номер: «БелАЗ-75306 №12»
+    type: Mapped[str] = mapped_column(String(50), index=True)  # самосвал, экскаватор, буровой станок...
+    status: Mapped[str] = mapped_column(String(50), index=True, default="в работе")
+    brand: Mapped[str | None] = mapped_column(String(100), index=True, default=None)  # БелАЗ, Komatsu, Sandvik
+    site: Mapped[str | None] = mapped_column(String(100), index=True, default=None)  # участок: разрез «Восточный»
+    output_tonnes: Mapped[float] = mapped_column(Float, default=0.0)  # выработка за последнюю смену, тонн
+    engine_hours: Mapped[float] = mapped_column(Float, default=0.0)  # наработка, моточасы
     description: Mapped[str | None] = mapped_column(Text, default=None)
     meta_json: Mapped[str | None] = mapped_column(Text, default=None)  # произвольный JSON строкой
+
     # Результат разметки моделью: POST /api/ai/enrich заполняет эти два поля.
-    # Переименуй под кейс: ai_label -> risk_level / intent / diagnosis и т.д.
+    # Под этот трек — риск отказа: метка (низкий/средний/высокий) и оценка 0..1.
     ai_label: Mapped[str | None] = mapped_column(String(100), index=True, default=None)
     ai_score: Mapped[float | None] = mapped_column(Float, default=None)
-    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), default=None)
+
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), default=None)  # ответственный механик
     created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
 
-    owner: Mapped["User | None"] = relationship(back_populates="entities")
-    events: Mapped[list["Event"]] = relationship(back_populates="entity", cascade="all, delete-orphan")
+    owner: Mapped["User | None"] = relationship(back_populates="assets")
+    events: Mapped[list["Event"]] = relationship(back_populates="asset", cascade="all, delete-orphan")
 
 
 class Event(Base):
-    """Что произошло с Entity: смена статуса, доставка, визит, платёж..."""
+    """Событие с техникой: отказ, простой, ТО, авария, нарушение ТБ."""
 
     __tablename__ = "events"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    entity_id: Mapped[int | None] = mapped_column(ForeignKey("entities.id"), index=True, default=None)
+    asset_id: Mapped[int | None] = mapped_column(ForeignKey("assets.id"), index=True, default=None)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), default=None)
-    type: Mapped[str] = mapped_column(String(50), index=True)
-    status: Mapped[str] = mapped_column(String(50), default="done")
-    value: Mapped[float] = mapped_column(Float, default=0.0)
-    comment: Mapped[str | None] = mapped_column(Text, default=None)
+    type: Mapped[str] = mapped_column(String(50), index=True)  # отказ, простой, ТО, авария...
+    status: Mapped[str] = mapped_column(String(50), default="закрыто")  # закрыто | в работе
+    downtime_hours: Mapped[float] = mapped_column(Float, default=0.0)  # сколько часов техника стояла
+    comment: Mapped[str | None] = mapped_column(Text, default=None)  # причина
     payload_json: Mapped[str | None] = mapped_column(Text, default=None)
     created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
 
-    entity: Mapped["Entity | None"] = relationship(back_populates="events")
+    asset: Mapped["Asset | None"] = relationship(back_populates="events")
 
 
 class AiCall(Base):
@@ -112,5 +120,5 @@ class AiCache(Base):
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
 
 
-Index("ix_entities_status_created", Entity.status, Entity.created_at)
+Index("ix_assets_status_created", Asset.status, Asset.created_at)
 Index("ix_events_type_created", Event.type, Event.created_at)

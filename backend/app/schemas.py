@@ -29,28 +29,30 @@ class LoginOut(BaseModel):
     user: UserOut
 
 
-# --- Entity ---
+# --- Asset (единица техники) ---
 
 
-class EntityIn(BaseModel):
+class AssetIn(BaseModel):
     name: str
-    type: str = "generic"
-    status: str = "new"
-    category: str | None = None
-    city: str | None = None
-    amount: float = 0.0
+    type: str = "самосвал"
+    status: str = "в работе"
+    brand: str | None = None
+    site: str | None = None
+    output_tonnes: float = 0.0
+    engine_hours: float = 0.0
     description: str | None = None
     owner_id: int | None = None
 
 
-class EntityOut(ORMModel):
+class AssetOut(ORMModel):
     id: int
     name: str
     type: str
     status: str
-    category: str | None
-    city: str | None
-    amount: float
+    brand: str | None
+    site: str | None
+    output_tonnes: float
+    engine_hours: float
     description: str | None
     ai_label: str | None
     ai_score: float | None
@@ -67,25 +69,25 @@ class ImportResult(BaseModel):
     columns_used: list[str]
 
 
-# --- Event ---
+# --- Event (событие с техникой) ---
 
 
 class EventIn(BaseModel):
-    entity_id: int | None = None
+    asset_id: int | None = None
     user_id: int | None = None
     type: str
-    status: str = "done"
-    value: float = 0.0
+    status: str = "закрыто"
+    downtime_hours: float = 0.0
     comment: str | None = None
 
 
 class EventOut(ORMModel):
     id: int
-    entity_id: int | None
+    asset_id: int | None
     user_id: int | None
     type: str
     status: str
-    value: float
+    downtime_hours: float
     comment: str | None
     created_at: datetime
 
@@ -99,12 +101,15 @@ class MetricCard(BaseModel):
     value: float
     unit: str = ""
     delta_pct: float | None = None  # изменение к прошлому периоду, %
+    # Для простоев и отказов рост — это плохо. Без этого признака фронт красит
+    # падение простоев красным, а рост аварий зелёным.
+    lower_is_better: bool = False
 
 
 class TimeseriesPoint(BaseModel):
     date: str  # YYYY-MM-DD
-    count: int
-    amount: float
+    downtime_hours: float
+    events: int
 
 
 class DashboardSummary(BaseModel):
@@ -121,10 +126,10 @@ class ChatIn(BaseModel):
 
 
 class EnrichIn(BaseModel):
-    """Какие записи разметить моделью и по какой инструкции."""
+    """Какую технику разметить моделью и по какой инструкции."""
 
-    entity_ids: list[int] = []       # пусто — возьмём последние limit записей без разметки
-    instruction: str = ""            # чем должна быть разметка: "оцени риск", "определи тему"...
+    asset_ids: list[int] = []  # пусто — возьмём последние limit единиц без разметки
+    instruction: str = ""      # чем должна быть разметка; по умолчанию — риск отказа
     limit: int = 10
 
 
@@ -138,7 +143,7 @@ class EnrichedRow(BaseModel):
 
 class EnrichResult(BaseModel):
     processed: int
-    status: str                      # ok | fallback — заглушка, если модель недоступна
+    status: str  # ok | fallback — заглушка, если модель недоступна
     cost_usd: float
     rows: list[EnrichedRow]
 
