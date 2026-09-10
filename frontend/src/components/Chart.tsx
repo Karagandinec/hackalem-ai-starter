@@ -1,26 +1,19 @@
-import {
-  Area,
-  AreaChart,
-  CartesianGrid,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import type { TimeseriesPoint } from "../api";
 
 /**
- * График динамики. Меняешь метрику — меняешь dataKey ("count" или "amount").
- * Другой тип графика — замени AreaChart на LineChart/BarChart из recharts.
+ * График динамики простоев. Меняешь метрику — меняешь dataKey
+ * ("downtime_hours" или "events"). Другой тип графика — замени AreaChart
+ * на LineChart/BarChart из recharts.
  */
 export default function Chart({
   data,
-  dataKey = "count",
-  label = "Записей в день",
+  dataKey = "downtime_hours",
+  label = "Часов простоя",
 }: {
   data: TimeseriesPoint[];
-  dataKey?: "count" | "amount";
+  dataKey?: "downtime_hours" | "events";
   label?: string;
 }) {
   if (data.length === 0) {

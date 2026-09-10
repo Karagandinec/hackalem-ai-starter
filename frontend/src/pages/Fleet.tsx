@@ -1,14 +1,14 @@
 import DataTable from "../components/DataTable";
 
-/** Полный список записей. Отдельная страница, чтобы дашборд не разрастался. */
-export default function Entities() {
+/** Полный список техники. Отдельная страница, чтобы дашборд не разрастался. */
+export default function Fleet() {
   return (
     <>
       <div className="page-head">
         <div>
-          <h1>Данные</h1>
+          <h1>Парк техники</h1>
           <div className="subtitle">
-            Таблица entities с фильтрами. Залей свой CSV, размечай записи моделью, выгружай результат.
+            Залей свой парк из CSV, оцени риск отказа моделью, выгрузи результат.
           </div>
         </div>
       </div>

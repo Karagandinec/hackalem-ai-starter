@@ -5,12 +5,12 @@ import Chart from "../components/Chart";
 import DataTable from "../components/DataTable";
 import MetricCardView from "../components/MetricCard";
 
-/** Шаблон дашборда: 4 карточки + график + таблица. Переделывай под свой кейс. */
+/** Дашборд диспетчера: готовность парка, простои, отказы, выработка. */
 export default function Dashboard() {
   const [days, setDays] = useState(30);
   const [data, setData] = useState<DashboardSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [metric, setMetric] = useState<"count" | "amount">("count");
+  const [metric, setMetric] = useState<"downtime_hours" | "events">("downtime_hours");
 
   useEffect(() => {
     getDashboard(days)
@@ -25,8 +25,8 @@ export default function Dashboard() {
     <>
       <div className="page-head">
         <div>
-          <h1>Дашборд</h1>
-          <div className="subtitle">Сводка за последние {days} дней</div>
+          <h1>Диспетчерская</h1>
+          <div className="subtitle">Состояние парка и простои за последние {days} дней</div>
         </div>
         <div className="field">
           <label htmlFor="period">Период</label>
@@ -54,17 +54,22 @@ export default function Dashboard() {
       <div className="grid-2">
         <div className="card">
           <div className="page-head" style={{ marginBottom: 8 }}>
-            <h2 style={{ margin: 0 }}>Динамика</h2>
+            <h2 style={{ margin: 0 }}>
+              {metric === "downtime_hours" ? "Простои по дням, часов" : "Событий по дням"}
+            </h2>
             <div>
-              <button className="ghost" onClick={() => setMetric(metric === "count" ? "amount" : "count")}>
-                {metric === "count" ? "показать сумму" : "показать количество"}
+              <button
+                className="ghost"
+                onClick={() => setMetric(metric === "downtime_hours" ? "events" : "downtime_hours")}
+              >
+                {metric === "downtime_hours" ? "показать количество событий" : "показать часы простоя"}
               </button>
             </div>
           </div>
           <Chart
             data={data?.timeseries ?? []}
             dataKey={metric}
-            label={metric === "count" ? "Записей" : "Сумма"}
+            label={metric === "downtime_hours" ? "Часов простоя" : "Событий"}
           />
         </div>
 

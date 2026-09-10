@@ -27,7 +27,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
 export type Health = {
   status: string;
   app?: string;
-  entities?: number;
+  assets?: number;
   ai_enabled?: boolean;
   model?: string;
 };
@@ -38,20 +38,23 @@ export type MetricCard = {
   value: number;
   unit: string;
   delta_pct: number | null;
+  lower_is_better: boolean;
 };
 
-export type TimeseriesPoint = { date: string; count: number; amount: number };
+export type TimeseriesPoint = { date: string; downtime_hours: number; events: number };
 
 export type DashboardSummary = { cards: MetricCard[]; timeseries: TimeseriesPoint[] };
 
-export type Entity = {
+/** Единица техники: самосвал, экскаватор, буровой станок, конвейер. */
+export type Asset = {
   id: number;
   name: string;
   type: string;
   status: string;
-  category: string | null;
-  city: string | null;
-  amount: number;
+  brand: string | null;
+  site: string | null;
+  output_tonnes: number;
+  engine_hours: number;
   description: string | null;
   ai_label: string | null;
   ai_score: number | null;
@@ -108,15 +111,17 @@ export const getHealth = () => api<Health>("/health");
 export const getDashboard = (days = 30) => api<DashboardSummary>(`/dashboard?days=${days}`);
 export const getAiMetrics = () => api<AiMetrics>("/ai/metrics");
 
-export type EntityFilters = {
+export type AssetFilters = {
   date_from?: string;
   date_to?: string;
   status?: string;
+  type?: string;
+  site?: string;
   search?: string;
   limit?: number;
 };
 
-function toQuery(params: EntityFilters): string {
+function toQuery(params: AssetFilters): string {
   const query = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => {
     if (value !== undefined && value !== "") query.set(key, String(value));
@@ -124,22 +129,22 @@ function toQuery(params: EntityFilters): string {
   return query.toString();
 }
 
-export const getEntities = (params: EntityFilters) => api<Entity[]>(`/entities?${toQuery(params)}`);
+export const getAssets = (params: AssetFilters) => api<Asset[]>(`/assets?${toQuery(params)}`);
 
 /** Ссылка на выгрузку — обычный <a href>, файл скачивает браузер. */
-export const exportCsvUrl = (params: EntityFilters) => `${BASE}/entities/export.csv?${toQuery(params)}`;
+export const exportCsvUrl = (params: AssetFilters) => `${BASE}/assets/export.csv?${toQuery(params)}`;
 
 /** Загрузка CSV. Content-Type тут не ставим: браузер сам проставит boundary. */
-export async function importEntities(file: File): Promise<ImportResult> {
+export async function importAssets(file: File): Promise<ImportResult> {
   const form = new FormData();
   form.append("file", file);
-  const response = await fetch(`${BASE}/entities/import`, { method: "POST", body: form });
+  const response = await fetch(`${BASE}/assets/import`, { method: "POST", body: form });
   if (!response.ok) throw new Error(`Импорт не удался: ${response.status} ${response.statusText}`);
   return (await response.json()) as ImportResult;
 }
 
-/** Разметка записей моделью: результат пишется в ai_label / ai_score в базе. */
-export const enrichEntities = (body: { entity_ids?: number[]; instruction?: string; limit?: number }) =>
+/** Оценка риска отказа моделью: результат пишется в ai_label / ai_score в базе. */
+export const enrichAssets = (body: { asset_ids?: number[]; instruction?: string; limit?: number }) =>
   api<EnrichResult>("/ai/enrich", { method: "POST", body: JSON.stringify(body) });
 
 // --- Чат со стримингом ------------------------------------------------------

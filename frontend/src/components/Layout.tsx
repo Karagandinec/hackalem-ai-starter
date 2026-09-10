@@ -5,8 +5,8 @@ import { getHealth, type Health } from "../api";
 
 /** Пункты меню. Добавляешь страницу — добавляешь строку сюда и <Route> в App.tsx. */
 const NAV = [
-  { to: "/", label: "Дашборд", icon: "▦" },
-  { to: "/entities", label: "Данные", icon: "☰" },
+  { to: "/", label: "Диспетчерская", icon: "▦" },
+  { to: "/fleet", label: "Парк техники", icon: "☰" },
   { to: "/chat", label: "Ассистент", icon: "✦" },
   { to: "/ai-metrics", label: "AI-метрики", icon: "◷" },
 ];

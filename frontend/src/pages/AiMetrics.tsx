@@ -125,7 +125,7 @@ export default function AiMetrics() {
                   <td className="mono">{call.purpose}</td>
                   <td className="muted mono">{call.model}</td>
                   <td>
-                    <span className={`badge ${call.status === "ok" ? "done" : "in_progress"}`}>
+                    <span className={`badge ${call.status === "ok" ? "ok" : "warn"}`}>
                       {call.cached ? "cached" : call.status}
                     </span>
                   </td>

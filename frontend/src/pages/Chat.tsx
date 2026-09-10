@@ -6,10 +6,10 @@ type ToolNote = { role: "tool"; content: string };
 type LogItem = ChatMessage | ToolNote;
 
 const HINTS = [
-  "Сколько записей за последние 7 дней?",
-  "Разбей суммы по статусам",
-  "Покажи 5 последних записей из Астаны",
-  "Создай заявку на консультацию для Айгерим",
+  "Сколько часов простоя за последние 7 дней?",
+  "Какая техника чаще всего ломается?",
+  "Простои по участкам за месяц",
+  "Покажи историю отказов самого изношенного самосвала",
 ];
 
 /** Панель чата с агентом. Ответ печатается по мере поступления (SSE). */
@@ -72,7 +72,7 @@ export default function Chat() {
         <div>
           <h1>Ассистент</h1>
           <div className="subtitle">
-            Модель ходит в базу через инструменты: чтение, запись, агрегаты. Ответ печатается стримом.
+            Модель ходит в базу через инструменты: техника, события, агрегаты. Ответ печатается стримом.
           </div>
         </div>
         {log.length > 0 && (
@@ -87,7 +87,7 @@ export default function Chat() {
       <div className="card chat">
         <div className="chat-log" ref={logRef}>
           {log.length === 0 && !partial && (
-            <div className="muted">Спроси что-нибудь про данные — модель сама сходит в базу.</div>
+            <div className="muted">Спроси про парк, простои или конкретную машину — модель сама сходит в базу.</div>
           )}
 
           {log.map((item, index) => (
@@ -110,7 +110,7 @@ export default function Chat() {
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Вопрос про данные..."
+            placeholder="Вопрос про парк, простои, отказы..."
             disabled={streaming}
           />
           <button type="submit" disabled={streaming || !input.trim()}>
