@@ -91,6 +91,8 @@ cd frontend && npm run typecheck
 2. **Логирование в `ai_calls`.** Каждый вызов модели пишется через `log_call()`: промпт,
    ответ, токены, латентность, стоимость. Новый вызов модели — новый лог, без исключений.
 3. **`make check` зелёный.** Сломал тест — почини тест или код, но не удаляй проверку.
+4. **Сценарий «залил CSV -> разметил моделью -> выгрузил»** — он же демо. Тесты на него
+   лежат в `backend/tests/test_data_flow.py`.
 
 ## 7. Секреты
 
@@ -108,6 +110,9 @@ cd frontend && npm run typecheck
 | Новый эндпоинт данных              | `backend/app/routers/core.py`                   |
 | Новый эндпоинт с моделью           | `backend/app/routers/ai.py`                     |
 | Новый инструмент для агента        | `backend/app/ai/tools.py` (описание + функция + `TOOL_HANDLERS`) |
+| Число раундов агента               | `MAX_TOOL_ROUNDS` в `backend/app/ai/agent.py`   |
+| Что модель пишет в `ai_label`      | `ENRICH_SCHEMA` + роут `enrich` в `backend/app/routers/ai.py` |
+| Колонки для импорта CSV            | `IMPORT_ALIASES` в `backend/app/routers/core.py` |
 | Новая JSON-схема ответа модели     | `backend/app/ai/schemas.py`                     |
 | Промпт агента                      | `backend/app/ai/agent.py`, `SYSTEM_PROMPT`      |
 | Демо-данные                        | `backend/scripts/generate_demo_data.py`         |
