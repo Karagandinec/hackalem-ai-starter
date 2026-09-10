@@ -52,8 +52,19 @@ class EntityOut(ORMModel):
     city: str | None
     amount: float
     description: str | None
+    ai_label: str | None
+    ai_score: float | None
     owner_id: int | None
     created_at: datetime
+
+
+class ImportResult(BaseModel):
+    """Итог загрузки файла: сколько строк приняли, сколько пропустили и почему."""
+
+    imported: int
+    skipped: int
+    errors: list[str]
+    columns_used: list[str]
 
 
 # --- Event ---
@@ -107,6 +118,29 @@ class DashboardSummary(BaseModel):
 class ChatIn(BaseModel):
     message: str
     history: list[dict] = []  # [{"role": "user"|"assistant", "content": "..."}]
+
+
+class EnrichIn(BaseModel):
+    """Какие записи разметить моделью и по какой инструкции."""
+
+    entity_ids: list[int] = []       # пусто — возьмём последние limit записей без разметки
+    instruction: str = ""            # чем должна быть разметка: "оцени риск", "определи тему"...
+    limit: int = 10
+
+
+class EnrichedRow(BaseModel):
+    id: int
+    name: str
+    ai_label: str | None
+    ai_score: float | None
+    reason: str = ""
+
+
+class EnrichResult(BaseModel):
+    processed: int
+    status: str                      # ok | fallback — заглушка, если модель недоступна
+    cost_usd: float
+    rows: list[EnrichedRow]
 
 
 class AiCallOut(ORMModel):

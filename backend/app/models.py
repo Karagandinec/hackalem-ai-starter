@@ -51,6 +51,10 @@ class Entity(Base):
     amount: Mapped[float] = mapped_column(Float, default=0.0)
     description: Mapped[str | None] = mapped_column(Text, default=None)
     meta_json: Mapped[str | None] = mapped_column(Text, default=None)  # произвольный JSON строкой
+    # Результат разметки моделью: POST /api/ai/enrich заполняет эти два поля.
+    # Переименуй под кейс: ai_label -> risk_level / intent / diagnosis и т.д.
+    ai_label: Mapped[str | None] = mapped_column(String(100), index=True, default=None)
+    ai_score: Mapped[float | None] = mapped_column(Float, default=None)
     owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), default=None)
     created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
 

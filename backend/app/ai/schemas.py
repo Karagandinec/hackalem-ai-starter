@@ -47,3 +47,16 @@ CLASSIFY_SCHEMA: dict = {
     },
     "required": ["category", "priority", "sentiment", "reason", "tags"],
 }
+
+
+# Разметка одной записи из базы: используется в POST /api/ai/enrich.
+ENRICH_SCHEMA: dict = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "label": {"type": "string", "description": "Короткая метка, 1-2 слова"},
+        "score": {"type": "number", "description": "Уверенность или оценка от 0 до 1"},
+        "reason": {"type": "string", "description": "Одно предложение: почему такая метка"},
+    },
+    "required": ["label", "score", "reason"],
+}

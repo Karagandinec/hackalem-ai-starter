@@ -12,12 +12,14 @@ from sqlalchemy.orm import Session
 
 from app.ai.agent import run_agent_stream
 from app.ai.client import complete
-from app.ai.schemas import CLASSIFY_SCHEMA, INSIGHT_SCHEMA
+from app.ai.schemas import CLASSIFY_SCHEMA, ENRICH_SCHEMA, INSIGHT_SCHEMA
 from app.db import SessionLocal, get_db
-from app.models import AiCall
-from app.schemas import AiCallOut, AiMetricsSummary, ChatIn
+from app.models import AiCall, Entity
+from app.schemas import AiCallOut, AiMetricsSummary, ChatIn, EnrichedRow, EnrichIn, EnrichResult
 
 router = APIRouter(prefix="/ai", tags=["ai"])
+
+MAX_ENRICH = 25  # потолок записей за один вызов: каждая запись — отдельный запрос к модели
 
 
 # --- Чат со стримингом ------------------------------------------------------
@@ -83,6 +85,83 @@ def insights(db: Session = Depends(get_db), context: str = Body("", embed=True))
         schema_name="insights",
     )
     return {"status": result.status, "data": result.data, "cost_usd": result.cost_usd, "error": result.error}
+
+
+@router.post("/enrich", response_model=EnrichResult)
+def enrich(payload: EnrichIn, db: Session = Depends(get_db)) -> EnrichResult:
+    """Разметить записи моделью и записать результат обратно в базу.
+
+    Это главный «прототип что-то делает» сценарий: выбрал записи -> модель
+    проставила метку и оценку -> они видны в таблице и на дашборде.
+    Один вызов модели на запись, поэтому лимит жёсткий: MAX_ENRICH за раз.
+    """
+    limit = max(1, min(payload.limit, MAX_ENRICH))
+    if payload.entity_ids:
+        entities = list(db.scalars(select(Entity).where(Entity.id.in_(payload.entity_ids[:limit]))).all())
+    else:
+        # Без явного списка берём свежие ещё не размеченные — удобно жать кнопку подряд.
+        entities = list(
+            db.scalars(
+                select(Entity).where(Entity.ai_label.is_(None)).order_by(Entity.created_at.desc()).limit(limit)
+            ).all()
+        )
+
+    instruction = payload.instruction.strip() or "Определи тему записи и оцени, насколько она требует внимания."
+    rows: list[EnrichedRow] = []
+    total_cost = 0.0
+    worst_status = "ok"
+
+    for entity in entities:
+        facts = {
+            "название": entity.name,
+            "тип": entity.type,
+            "статус": entity.status,
+            "категория": entity.category,
+            "город": entity.city,
+            "сумма": entity.amount,
+            "описание": entity.description,
+        }
+        result = complete(
+            db,
+            [
+                {"role": "system", "content": "Ты размечаешь записи из базы. Отвечай по-русски, кратко."},
+                {
+                    "role": "user",
+                    "content": f"Задача: {instruction}\n\nЗапись:\n{json.dumps(facts, ensure_ascii=False)}",
+                },
+            ],
+            purpose="enrich",
+            json_schema=ENRICH_SCHEMA,
+            schema_name="enrichment",
+            max_tokens=200,
+        )
+        total_cost += result.cost_usd
+        if result.status == "fallback":
+            worst_status = "fallback"
+
+        data = result.data or {}
+        entity.ai_label = str(data.get("label") or "")[:100] or None
+        try:
+            entity.ai_score = round(float(data.get("score") or 0), 3)
+        except (TypeError, ValueError):
+            entity.ai_score = None
+        rows.append(
+            EnrichedRow(
+                id=entity.id,
+                name=entity.name,
+                ai_label=entity.ai_label,
+                ai_score=entity.ai_score,
+                reason=str(data.get("reason") or ""),
+            )
+        )
+
+    db.commit()
+    return EnrichResult(
+        processed=len(rows),
+        status=worst_status,
+        cost_usd=round(total_cost, 6),
+        rows=rows,
+    )
 
 
 @router.post("/classify")
