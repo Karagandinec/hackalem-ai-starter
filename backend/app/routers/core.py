@@ -3,10 +3,13 @@
 Всё, что нужно, чтобы фронт ожил сразу после `make seed`.
 """
 
+import csv
+import io
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi.responses import StreamingResponse
+from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_user, hash_password, make_token
@@ -19,6 +22,7 @@ from app.schemas import (
     EntityOut,
     EventIn,
     EventOut,
+    ImportResult,
     LoginIn,
     LoginOut,
     MetricCard,
@@ -77,6 +81,28 @@ def list_users(db: Session = Depends(get_db)) -> list[User]:
 # --- Entities ---------------------------------------------------------------
 
 
+def _filtered(
+    date_from: str | None,
+    date_to: str | None,
+    status_filter: str | None,
+    type_filter: str | None,
+    search: str | None,
+) -> Select:
+    """Общий набор фильтров для списка и для выгрузки — чтобы они не разъехались."""
+    stmt = select(Entity)
+    if status_filter:
+        stmt = stmt.where(Entity.status == status_filter)
+    if type_filter:
+        stmt = stmt.where(Entity.type == type_filter)
+    if search:
+        stmt = stmt.where(Entity.name.ilike(f"%{search}%"))
+    if date_from:
+        stmt = stmt.where(Entity.created_at >= datetime.fromisoformat(date_from))
+    if date_to:
+        stmt = stmt.where(Entity.created_at <= datetime.fromisoformat(date_to) + timedelta(days=1))
+    return stmt.order_by(Entity.created_at.desc())
+
+
 @router.get("/entities", response_model=list[EntityOut], tags=["entities"])
 def list_entities(
     db: Session = Depends(get_db),
@@ -89,18 +115,7 @@ def list_entities(
     offset: int = 0,
 ) -> list[Entity]:
     """Список с фильтрами — под таблицу на дашборде."""
-    stmt = select(Entity)
-    if status_filter:
-        stmt = stmt.where(Entity.status == status_filter)
-    if type_filter:
-        stmt = stmt.where(Entity.type == type_filter)
-    if search:
-        stmt = stmt.where(Entity.name.ilike(f"%{search}%"))
-    if date_from:
-        stmt = stmt.where(Entity.created_at >= datetime.fromisoformat(date_from))
-    if date_to:
-        stmt = stmt.where(Entity.created_at <= datetime.fromisoformat(date_to) + timedelta(days=1))
-    stmt = stmt.order_by(Entity.created_at.desc()).limit(limit).offset(offset)
+    stmt = _filtered(date_from, date_to, status_filter, type_filter, search).limit(limit).offset(offset)
     return list(db.scalars(stmt).all())
 
 
@@ -111,6 +126,111 @@ def create_entity(payload: EntityIn, db: Session = Depends(get_db)) -> Entity:
     db.commit()
     db.refresh(entity)
     return entity
+
+
+# Колонки файла узнаём по этим синонимам: датасет на хакатоне почти всегда
+# приходит с русскими заголовками, и переименовывать их руками — потеря времени.
+IMPORT_ALIASES: dict[str, tuple[str, ...]] = {
+    "name": ("name", "название", "наименование", "имя", "клиент", "title"),
+    "type": ("type", "тип", "вид"),
+    "status": ("status", "статус", "состояние"),
+    "category": ("category", "категория", "группа"),
+    "city": ("city", "город", "регион"),
+    "amount": ("amount", "сумма", "цена", "стоимость", "price", "total"),
+    "description": ("description", "описание", "комментарий", "примечание", "comment"),
+}
+
+
+@router.post("/entities/import", response_model=ImportResult, tags=["entities"])
+async def import_entities(file: UploadFile = File(...), db: Session = Depends(get_db)) -> ImportResult:
+    """Загрузка CSV в таблицу entities.
+
+    Умеет то, обо что обычно спотыкаются в спешке: BOM от Excel, разделитель `;`
+    вместо запятой и русские заголовки колонок. Неизвестные колонки игнорируются,
+    испорченные строки не роняют импорт, а попадают в errors.
+    """
+    raw = await file.read()
+    text = raw.decode("utf-8-sig", errors="replace")
+    if not text.strip():
+        return ImportResult(imported=0, skipped=0, errors=["Файл пустой"], columns_used=[])
+
+    # Excel в русской локали сохраняет CSV через точку с запятой.
+    header = text.splitlines()[0]
+    delimiter = ";" if header.count(";") > header.count(",") else ","
+    reader = csv.DictReader(io.StringIO(text), delimiter=delimiter)
+
+    mapping: dict[str, str] = {}
+    for column in reader.fieldnames or []:
+        key = (column or "").strip().lower()
+        for field, aliases in IMPORT_ALIASES.items():
+            if key in aliases and field not in mapping.values():
+                mapping[column] = field
+                break
+
+    if "name" not in mapping.values():
+        return ImportResult(
+            imported=0,
+            skipped=0,
+            errors=[f"Не нашёл колонку с названием. Заголовки файла: {reader.fieldnames}"],
+            columns_used=[],
+        )
+
+    imported, skipped, errors = 0, 0, []
+    for line, row in enumerate(reader, start=2):
+        payload: dict = {}
+        try:
+            for column, field in mapping.items():
+                value = (row.get(column) or "").strip()
+                if not value:
+                    continue
+                payload[field] = float(value.replace(" ", "").replace(",", ".")) if field == "amount" else value
+            if not payload.get("name"):
+                skipped += 1
+                continue
+            payload.setdefault("type", "imported")
+            payload.setdefault("status", "new")
+            db.add(Entity(**payload))
+            imported += 1
+        except (ValueError, TypeError) as exc:
+            skipped += 1
+            if len(errors) < 10:  # 10 примеров достаточно, весь файл в ответ не тащим
+                errors.append(f"строка {line}: {exc}")
+
+    db.commit()
+    return ImportResult(imported=imported, skipped=skipped, errors=errors, columns_used=sorted(set(mapping.values())))
+
+
+@router.get("/entities/export.csv", tags=["entities"])
+def export_entities(
+    db: Session = Depends(get_db),
+    date_from: str | None = Query(None, description="YYYY-MM-DD"),
+    date_to: str | None = Query(None, description="YYYY-MM-DD"),
+    status_filter: str | None = Query(None, alias="status"),
+    type_filter: str | None = Query(None, alias="type"),
+    search: str | None = None,
+    limit: int = Query(5000, le=50000),
+) -> StreamingResponse:
+    """Выгрузка отфильтрованных записей в CSV — те же фильтры, что у списка."""
+    rows = db.scalars(_filtered(date_from, date_to, status_filter, type_filter, search).limit(limit)).all()
+
+    buffer = io.StringIO()
+    # BOM и `;` — чтобы файл открывался в русском Excel двойным щелчком, без танцев.
+    buffer.write("\ufeff")
+    writer = csv.writer(buffer, delimiter=";", lineterminator="\n")
+    writer.writerow(["id", "name", "type", "status", "category", "city", "amount", "ai_label", "ai_score", "created_at"])
+    for row in rows:
+        writer.writerow([
+            row.id, row.name, row.type, row.status, row.category or "", row.city or "",
+            row.amount, row.ai_label or "", row.ai_score if row.ai_score is not None else "",
+            row.created_at.isoformat(sep=" ", timespec="seconds"),
+        ])
+    buffer.seek(0)
+
+    return StreamingResponse(
+        iter([buffer.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="entities.csv"'},
+    )
 
 
 @router.get("/entities/{entity_id}", response_model=EntityOut, tags=["entities"])
