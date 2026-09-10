@@ -30,3 +30,6 @@ dist/
 .idea/
 .DS_Store
 Thumbs.db
+
+# --- local knowledge base (внутренние рабочие документы, не для публикации) ---
+/HackLM/
