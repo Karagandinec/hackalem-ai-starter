@@ -5,15 +5,32 @@
   * ВСЕ ключи из properties перечислены в "required" (необязательных нет —
     если поле может отсутствовать, разреши ему быть null: "type": ["string", "null"]).
 
-Это два примера под типовые задачи хакатона. Свой кейс — добавляй схему рядом.
+Схемы заточены под трек «Добывающая промышленность». Свой кейс — добавляй рядом.
 """
 
-# Аналитика по данным дашборда: 3 инсайта + рекомендация.
+# Разметка единицы техники: риск отказа. Используется в POST /api/ai/enrich.
+ENRICH_SCHEMA: dict = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "label": {
+            "type": "string",
+            "enum": ["низкий", "средний", "высокий", "критический"],
+            "description": "Риск отказа в ближайшую неделю",
+        },
+        "score": {"type": "number", "description": "Оценка риска от 0 до 1"},
+        "reason": {"type": "string", "description": "Одно предложение: почему такой риск"},
+        "action": {"type": "string", "description": "Что сделать: осмотр узла, вывести в ТО, наблюдать"},
+    },
+    "required": ["label", "score", "reason", "action"],
+}
+
+# Аналитика по парку: выводы и что делать. Используется в POST /api/ai/insights.
 INSIGHT_SCHEMA: dict = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "summary": {"type": "string", "description": "Одно предложение: что происходит с данными"},
+        "summary": {"type": "string", "description": "Одно предложение: что происходит с парком"},
         "insights": {
             "type": "array",
             "description": "От 2 до 4 наблюдений",
@@ -24,7 +41,7 @@ INSIGHT_SCHEMA: dict = {
                     "title": {"type": "string"},
                     "detail": {"type": "string"},
                     "severity": {"type": "string", "enum": ["info", "warning", "critical"]},
-                    "metric": {"type": ["string", "null"], "description": "На какую метрику опирается"},
+                    "metric": {"type": ["string", "null"], "description": "На какую цифру опирается"},
                 },
                 "required": ["title", "detail", "severity", "metric"],
             },
@@ -34,29 +51,19 @@ INSIGHT_SCHEMA: dict = {
     "required": ["summary", "insights", "recommendation"],
 }
 
-# Классификация произвольного текста — заявки, отзыва, сообщения.
+# Разбор произвольного текста: заявка от мастера, запись из журнала, рация.
 CLASSIFY_SCHEMA: dict = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "category": {"type": "string", "description": "Категория одним словом"},
-        "priority": {"type": "string", "enum": ["low", "medium", "high"]},
-        "sentiment": {"type": "string", "enum": ["negative", "neutral", "positive"]},
+        "category": {
+            "type": "string",
+            "enum": ["отказ", "плановое ТО", "простой", "авария", "нарушение ТБ", "прочее"],
+        },
+        "unit": {"type": ["string", "null"], "description": "Какая техника упомянута, если названа"},
+        "urgency": {"type": "string", "enum": ["низкая", "средняя", "высокая"]},
+        "downtime_hours_estimate": {"type": "number", "description": "Оценка простоя в часах"},
         "reason": {"type": "string", "description": "Почему именно так"},
-        "tags": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["category", "priority", "sentiment", "reason", "tags"],
-}
-
-
-# Разметка одной записи из базы: используется в POST /api/ai/enrich.
-ENRICH_SCHEMA: dict = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "label": {"type": "string", "description": "Короткая метка, 1-2 слова"},
-        "score": {"type": "number", "description": "Уверенность или оценка от 0 до 1"},
-        "reason": {"type": "string", "description": "Одно предложение: почему такая метка"},
-    },
-    "required": ["label", "score", "reason"],
+    "required": ["category", "unit", "urgency", "downtime_hours_estimate", "reason"],
 }

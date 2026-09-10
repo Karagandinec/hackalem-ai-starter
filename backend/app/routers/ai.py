@@ -14,12 +14,18 @@ from app.ai.agent import run_agent_stream
 from app.ai.client import complete
 from app.ai.schemas import CLASSIFY_SCHEMA, ENRICH_SCHEMA, INSIGHT_SCHEMA
 from app.db import SessionLocal, get_db
-from app.models import AiCall, Entity
+from app.models import AiCall, Asset, Event
 from app.schemas import AiCallOut, AiMetricsSummary, ChatIn, EnrichedRow, EnrichIn, EnrichResult
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
-MAX_ENRICH = 25  # потолок записей за один вызов: каждая запись — отдельный запрос к модели
+MAX_ENRICH = 25  # потолок за один вызов: каждая единица техники — отдельный запрос к модели
+EVENTS_PER_ASSET = 8  # столько последних событий машины кладём в промпт
+
+DEFAULT_ENRICH_INSTRUCTION = (
+    "Оцени риск отказа этой техники в ближайшую неделю по наработке и истории событий. "
+    "Учитывай частоту отказов, суммарные простои и характер причин."
+)
 
 
 # --- Чат со стримингом ------------------------------------------------------
@@ -55,29 +61,131 @@ def chat(payload: ChatIn) -> StreamingResponse:
     )
 
 
+# --- Разметка техники моделью ----------------------------------------------
+
+
+@router.post("/enrich", response_model=EnrichResult)
+def enrich(payload: EnrichIn, db: Session = Depends(get_db)) -> EnrichResult:
+    """Оценить риск отказа техники и записать результат обратно в базу.
+
+    Это главный «прототип что-то делает» сценарий трека: берём наработку и историю
+    событий машины, модель ставит метку риска и объясняет почему, метка видна
+    в таблице и на дашборде. Один вызов модели на единицу техники, поэтому
+    лимит жёсткий: MAX_ENRICH за раз.
+    """
+    limit = max(1, min(payload.limit, MAX_ENRICH))
+    if payload.asset_ids:
+        assets = list(db.scalars(select(Asset).where(Asset.id.in_(payload.asset_ids[:limit]))).all())
+    else:
+        # Без явного списка берём самую изношенную ещё не размеченную технику.
+        assets = list(
+            db.scalars(
+                select(Asset).where(Asset.ai_label.is_(None)).order_by(Asset.engine_hours.desc()).limit(limit)
+            ).all()
+        )
+
+    instruction = payload.instruction.strip() or DEFAULT_ENRICH_INSTRUCTION
+    rows: list[EnrichedRow] = []
+    total_cost = 0.0
+    worst_status = "ok"
+
+    for asset in assets:
+        history = db.scalars(
+            select(Event).where(Event.asset_id == asset.id).order_by(Event.created_at.desc()).limit(EVENTS_PER_ASSET)
+        ).all()
+        facts = {
+            "техника": asset.name,
+            "тип": asset.type,
+            "марка": asset.brand,
+            "участок": asset.site,
+            "статус": asset.status,
+            "наработка_моточасов": asset.engine_hours,
+            "выработка_за_смену_т": asset.output_tonnes,
+            "последние_события": [
+                {
+                    "дата": e.created_at.strftime("%Y-%m-%d"),
+                    "тип": e.type,
+                    "простой_ч": e.downtime_hours,
+                    "причина": e.comment,
+                }
+                for e in history
+            ],
+        }
+        result = complete(
+            db,
+            [
+                {
+                    "role": "system",
+                    "content": "Ты инженер по надёжности горной техники. Отвечай по-русски, кратко и по фактам.",
+                },
+                {
+                    "role": "user",
+                    "content": f"Задача: {instruction}\n\nДанные:\n{json.dumps(facts, ensure_ascii=False)}",
+                },
+            ],
+            purpose="enrich",
+            json_schema=ENRICH_SCHEMA,
+            schema_name="risk_assessment",
+            max_tokens=250,
+        )
+        total_cost += result.cost_usd
+        if result.status == "fallback":
+            worst_status = "fallback"
+
+        data = result.data or {}
+        asset.ai_label = str(data.get("label") or "")[:100] or None
+        try:
+            asset.ai_score = round(float(data.get("score") or 0), 3)
+        except (TypeError, ValueError):
+            asset.ai_score = None
+
+        reason = str(data.get("reason") or "")
+        if data.get("action"):
+            reason = f"{reason} Действие: {data['action']}"
+        rows.append(
+            EnrichedRow(
+                id=asset.id, name=asset.name, ai_label=asset.ai_label, ai_score=asset.ai_score, reason=reason.strip()
+            )
+        )
+
+    db.commit()
+    return EnrichResult(processed=len(rows), status=worst_status, cost_usd=round(total_cost, 6), rows=rows)
+
+
 # --- Structured outputs -----------------------------------------------------
 
 
 @router.post("/insights")
 def insights(db: Session = Depends(get_db), context: str = Body("", embed=True)) -> dict:
-    """Пример Structured Outputs: модель возвращает JSON строго по INSIGHT_SCHEMA.
-
-    context — любой текст или выгрузка цифр, по которым нужно сделать выводы.
-    """
+    """Пример Structured Outputs: модель возвращает JSON строго по INSIGHT_SCHEMA."""
     from app.ai.tools import tool_aggregate_metrics
 
     facts = {
-        "по статусам": tool_aggregate_metrics(db, table="entities", metric="count", group_by="status"),
-        "сумма по дням": tool_aggregate_metrics(db, table="entities", metric="sum", group_by="day"),
-        "средний чек": tool_aggregate_metrics(db, table="entities", metric="avg", group_by="none"),
+        "парк по статусам": tool_aggregate_metrics(db, table="assets", metric="count", group_by="status"),
+        "простои по участкам, ч": tool_aggregate_metrics(
+            db, table="events", metric="sum", field="downtime_hours", group_by="site"
+        ),
+        "события по типам": tool_aggregate_metrics(db, table="events", metric="count", group_by="type"),
+        "простои по дням, ч": tool_aggregate_metrics(
+            db, table="events", metric="sum", field="downtime_hours", group_by="day"
+        ),
+        "средняя наработка, мч": tool_aggregate_metrics(
+            db, table="assets", metric="avg", field="engine_hours", group_by="none"
+        ),
     }
     result = complete(
         db,
         [
-            {"role": "system", "content": "Ты аналитик. Отвечай по-русски, опирайся только на цифры из данных."},
+            {
+                "role": "system",
+                "content": "Ты аналитик горного производства. Отвечай по-русски, опирайся только на цифры из данных.",
+            },
             {
                 "role": "user",
-                "content": f"Данные:\n{json.dumps(facts, ensure_ascii=False, default=str)}\n\nЗадача: {context or 'дай выводы по данным'}",
+                "content": (
+                    f"Данные:\n{json.dumps(facts, ensure_ascii=False, default=str)}\n\n"
+                    f"Задача: {context or 'дай выводы по состоянию парка и простоям'}"
+                ),
             },
         ],
         purpose="insights",
@@ -87,90 +195,16 @@ def insights(db: Session = Depends(get_db), context: str = Body("", embed=True))
     return {"status": result.status, "data": result.data, "cost_usd": result.cost_usd, "error": result.error}
 
 
-@router.post("/enrich", response_model=EnrichResult)
-def enrich(payload: EnrichIn, db: Session = Depends(get_db)) -> EnrichResult:
-    """Разметить записи моделью и записать результат обратно в базу.
-
-    Это главный «прототип что-то делает» сценарий: выбрал записи -> модель
-    проставила метку и оценку -> они видны в таблице и на дашборде.
-    Один вызов модели на запись, поэтому лимит жёсткий: MAX_ENRICH за раз.
-    """
-    limit = max(1, min(payload.limit, MAX_ENRICH))
-    if payload.entity_ids:
-        entities = list(db.scalars(select(Entity).where(Entity.id.in_(payload.entity_ids[:limit]))).all())
-    else:
-        # Без явного списка берём свежие ещё не размеченные — удобно жать кнопку подряд.
-        entities = list(
-            db.scalars(
-                select(Entity).where(Entity.ai_label.is_(None)).order_by(Entity.created_at.desc()).limit(limit)
-            ).all()
-        )
-
-    instruction = payload.instruction.strip() or "Определи тему записи и оцени, насколько она требует внимания."
-    rows: list[EnrichedRow] = []
-    total_cost = 0.0
-    worst_status = "ok"
-
-    for entity in entities:
-        facts = {
-            "название": entity.name,
-            "тип": entity.type,
-            "статус": entity.status,
-            "категория": entity.category,
-            "город": entity.city,
-            "сумма": entity.amount,
-            "описание": entity.description,
-        }
-        result = complete(
-            db,
-            [
-                {"role": "system", "content": "Ты размечаешь записи из базы. Отвечай по-русски, кратко."},
-                {
-                    "role": "user",
-                    "content": f"Задача: {instruction}\n\nЗапись:\n{json.dumps(facts, ensure_ascii=False)}",
-                },
-            ],
-            purpose="enrich",
-            json_schema=ENRICH_SCHEMA,
-            schema_name="enrichment",
-            max_tokens=200,
-        )
-        total_cost += result.cost_usd
-        if result.status == "fallback":
-            worst_status = "fallback"
-
-        data = result.data or {}
-        entity.ai_label = str(data.get("label") or "")[:100] or None
-        try:
-            entity.ai_score = round(float(data.get("score") or 0), 3)
-        except (TypeError, ValueError):
-            entity.ai_score = None
-        rows.append(
-            EnrichedRow(
-                id=entity.id,
-                name=entity.name,
-                ai_label=entity.ai_label,
-                ai_score=entity.ai_score,
-                reason=str(data.get("reason") or ""),
-            )
-        )
-
-    db.commit()
-    return EnrichResult(
-        processed=len(rows),
-        status=worst_status,
-        cost_usd=round(total_cost, 6),
-        rows=rows,
-    )
-
-
 @router.post("/classify")
 def classify(db: Session = Depends(get_db), text: str = Body(..., embed=True)) -> dict:
-    """Пример Structured Outputs №2: разложить произвольный текст по полям."""
+    """Разбор произвольного текста: заявка мастера, запись из журнала, сообщение по рации."""
     result = complete(
         db,
         [
-            {"role": "system", "content": "Классифицируй обращение. Отвечай по-русски."},
+            {
+                "role": "system",
+                "content": "Разбери сообщение с участка горных работ по полям. Отвечай по-русски.",
+            },
             {"role": "user", "content": text},
         ],
         purpose="classify",
