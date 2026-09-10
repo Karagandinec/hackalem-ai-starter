@@ -1,0 +1,32 @@
+# --- secrets ---
+.env
+.env.local
+*.env
+!.env.example
+
+# --- python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# --- database ---
+*.db
+*.sqlite
+*.sqlite3
+
+# --- node ---
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# --- editors / os ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

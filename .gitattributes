@@ -1,0 +1,5 @@
+# Батники cmd.exe читает только с CRLF: с LF он молча виснет.
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+Makefile text eol=lf
