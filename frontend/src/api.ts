@@ -53,8 +53,24 @@ export type Entity = {
   city: string | null;
   amount: number;
   description: string | null;
+  ai_label: string | null;
+  ai_score: number | null;
   owner_id: number | null;
   created_at: string;
+};
+
+export type ImportResult = {
+  imported: number;
+  skipped: number;
+  errors: string[];
+  columns_used: string[];
+};
+
+export type EnrichResult = {
+  processed: number;
+  status: string;
+  cost_usd: number;
+  rows: { id: number; name: string; ai_label: string | null; ai_score: number | null; reason: string }[];
 };
 
 export type AiCall = {
@@ -92,25 +108,45 @@ export const getHealth = () => api<Health>("/health");
 export const getDashboard = (days = 30) => api<DashboardSummary>(`/dashboard?days=${days}`);
 export const getAiMetrics = () => api<AiMetrics>("/ai/metrics");
 
-export function getEntities(params: {
+export type EntityFilters = {
   date_from?: string;
   date_to?: string;
   status?: string;
   search?: string;
   limit?: number;
-}) {
+};
+
+function toQuery(params: EntityFilters): string {
   const query = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => {
     if (value !== undefined && value !== "") query.set(key, String(value));
   });
-  return api<Entity[]>(`/entities?${query.toString()}`);
+  return query.toString();
 }
+
+export const getEntities = (params: EntityFilters) => api<Entity[]>(`/entities?${toQuery(params)}`);
+
+/** Ссылка на выгрузку — обычный <a href>, файл скачивает браузер. */
+export const exportCsvUrl = (params: EntityFilters) => `${BASE}/entities/export.csv?${toQuery(params)}`;
+
+/** Загрузка CSV. Content-Type тут не ставим: браузер сам проставит boundary. */
+export async function importEntities(file: File): Promise<ImportResult> {
+  const form = new FormData();
+  form.append("file", file);
+  const response = await fetch(`${BASE}/entities/import`, { method: "POST", body: form });
+  if (!response.ok) throw new Error(`Импорт не удался: ${response.status} ${response.statusText}`);
+  return (await response.json()) as ImportResult;
+}
+
+/** Разметка записей моделью: результат пишется в ai_label / ai_score в базе. */
+export const enrichEntities = (body: { entity_ids?: number[]; instruction?: string; limit?: number }) =>
+  api<EnrichResult>("/ai/enrich", { method: "POST", body: JSON.stringify(body) });
 
 // --- Чат со стримингом ------------------------------------------------------
 
 export type ChatEvent =
   | { type: "delta"; text: string }
-  | { type: "tool"; name: string; arguments: Record<string, unknown>; result: unknown }
+  | { type: "tool"; round: number; name: string; arguments: Record<string, unknown>; result: unknown }
   | { type: "done"; meta: Record<string, unknown> }
   | { type: "error"; message: string };
 

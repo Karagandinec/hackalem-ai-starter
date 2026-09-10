@@ -45,9 +45,11 @@ export default function Chat() {
           answer += event.text;
           setPartial(answer);
         } else if (event.type === "tool") {
+          // Раунд показываем специально: видно, что агент уточняет запрос по итогам
+          // первого ответа базы, а не делает один слепой вызов.
           setLog((prev) => [
             ...prev,
-            { role: "tool", content: `⚙ ${event.name}(${JSON.stringify(event.arguments)})` },
+            { role: "tool", content: `⚙ раунд ${event.round} · ${event.name}(${JSON.stringify(event.arguments)})` },
           ]);
         } else if (event.type === "done") {
           setMeta(event.meta);
