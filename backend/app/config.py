@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./app.db"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     backend_port: int = 8000
+    # В контейнере база живёт на временном диске и чистится при рестарте:
+    # с этим флагом пустая база наливается демо-данными при старте.
+    seed_on_start: bool = False
 
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"

@@ -138,3 +138,22 @@ def test_ai_metrics_logged(client):
     metrics = client.get("/api/ai/metrics").json()
     assert metrics["total_calls"] >= 1
     assert metrics["recent"][0]["purpose"]
+
+
+def test_root_serves_app_or_docs(client):
+    """В деплое / отдаёт собранный фронт, без сборки — уводит на /docs.
+    Оба варианта штатные: dist в .gitignore, на чистом клоне его нет."""
+    from app.main import FRONTEND_DIST
+
+    response = client.get("/", follow_redirects=False)
+    if FRONTEND_DIST.is_dir():
+        assert response.status_code == 200
+        assert "text/html" in response.headers["content-type"]
+    else:
+        assert response.status_code in (302, 307)
+        assert response.headers["location"] == "/docs"
+
+
+def test_unknown_api_path_is_404(client):
+    """Раздача фронта не должна проглатывать промахи по API: /api/* — всегда JSON."""
+    assert client.get("/api/definitely-missing").status_code == 404

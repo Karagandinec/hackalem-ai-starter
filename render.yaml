@@ -1,0 +1,20 @@
+# Blueprint для Render: подключить репозиторий -> New -> Blueprint -> Apply.
+# Бесплатный план засыпает после 15 минут простоя и просыпается за ~40 секунд
+# на первом запросе — для проверки жюри этого достаточно.
+services:
+  - type: web
+    name: hackalem-terricon
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      # Диск на free-плане временный: наливаем демо-данные при каждом старте.
+      - key: SEED_ON_START
+        value: "true"
+      # Ключ вводится руками в дашборде Render. Без него демо работает на заглушке.
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
