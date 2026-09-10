@@ -16,6 +16,7 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import timedelta
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -126,7 +127,7 @@ FALLBACK_TEXT = (
 )
 
 
-def stub_from_schema(schema: dict) -> dict:
+def stub_from_schema(schema: dict) -> Any:
     """Собирает пустышку нужной формы по JSON Schema — чтобы фронт не сломался,
     когда модель недоступна."""
     if "enum" in schema:

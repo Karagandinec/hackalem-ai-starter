@@ -1,17 +1,29 @@
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-export default defineConfig({
-  plugins: [react()],
-  server: {
-    port: 5173,
-    // Прокси: фронт зовёт /api/..., Vite перекидывает на FastAPI.
-    // Благодаря этому в проде и в деве один и тот же путь, а CORS не мешает.
-    proxy: {
-      "/api": {
-        target: process.env.VITE_API_URL || "http://localhost:8000",
-        changeOrigin: true,
+import react from "@vitejs/plugin-react";
+import { defineConfig, loadEnv } from "vite";
+
+// .env лежит в корне монорепо — один файл на backend и frontend.
+// Без envDir Vite искал бы его в frontend/ и тихо игнорировал VITE_API_URL.
+const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, rootDir, "VITE_"); // только VITE_*, ключи наружу не утекают
+
+  return {
+    plugins: [react()],
+    envDir: rootDir,
+    server: {
+      port: 5173,
+      // Фронт зовёт /api/..., Vite перекидывает на FastAPI: один и тот же путь
+      // в деве и в проде, CORS не мешает.
+      proxy: {
+        "/api": {
+          target: env.VITE_API_URL || "http://localhost:8000",
+          changeOrigin: true,
+        },
       },
     },
-  },
+  };
 });
