@@ -1,19 +1,23 @@
-"""Импорт CSV, выгрузка CSV и разметка записей моделью.
+"""Импорт CSV, выгрузка CSV и разметка техники моделью.
 
-Это сценарий, который на хакатоне выполняется первым: залил файл -> разметил
-моделью -> выгрузил результат. Ломается — демо показывать нечего.
+Это сценарий, который на хакатоне выполняется первым: залил парк техники ->
+оценил риск отказа моделью -> выгрузил результат. Ломается — демо показывать нечего.
 """
 
 from app.db import SessionLocal
-from app.models import Entity
+from app.models import Asset
 
-CSV_RU = "Название;Город;Сумма;Статус\nАйгерим Сатпаева;Астана;15 000;new\nДанияр Ким;Караганда;8500,50;done\n"
-CSV_EN = "name,city,amount\nJohn Smith,Astana,1000\n"
+CSV_RU = (
+    "Бортовой номер;Тип;Участок;Наработка;Статус\n"
+    "БелАЗ-75306 №201;самосвал;Разрез «Восточный»;12 500;в работе\n"
+    "Komatsu PC1250 №14;экскаватор;Разрез «Северный»;18300,5;в ремонте\n"
+)
+CSV_EN = "name,type,engine_hours\nCaterpillar 777 #7,самосвал,4200\n"
 
 
-def _upload(client, content: str, filename: str = "data.csv"):
+def _upload(client, content: str, filename: str = "fleet.csv"):
     return client.post(
-        "/api/entities/import",
+        "/api/assets/import",
         files={"file": (filename, content.encode("utf-8"), "text/csv")},
     )
 
@@ -26,15 +30,15 @@ def test_import_russian_csv_with_semicolons(client):
     body = response.json()
     assert body["imported"] == 2
     assert body["skipped"] == 0
-    assert set(body["columns_used"]) == {"name", "city", "amount", "status"}
+    assert set(body["columns_used"]) == {"name", "type", "site", "engine_hours", "status"}
 
     db = SessionLocal()
     try:
-        row = db.query(Entity).filter(Entity.name == "Данияр Ким").one()
-        assert row.amount == 8500.5  # "8500,50" разобрано как число
-        assert row.city == "Караганда"
-        row_with_spaces = db.query(Entity).filter(Entity.name == "Айгерим Сатпаева").one()
-        assert row_with_spaces.amount == 15000.0  # "15 000" тоже
+        row = db.query(Asset).filter(Asset.name == "Komatsu PC1250 №14").one()
+        assert row.engine_hours == 18300.5  # "18300,5" разобрано как число
+        assert row.site == "Разрез «Северный»"
+        spaced = db.query(Asset).filter(Asset.name == "БелАЗ-75306 №201").one()
+        assert spaced.engine_hours == 12500.0  # "12 500" тоже
     finally:
         db.close()
 
@@ -57,31 +61,31 @@ def test_import_empty_file(client):
 
 def test_export_csv(client):
     _upload(client, CSV_EN)
-    response = client.get("/api/entities/export.csv")
+    response = client.get("/api/assets/export.csv")
     assert response.status_code == 200
     assert "text/csv" in response.headers["content-type"]
     assert "attachment" in response.headers["content-disposition"]
 
     text = response.content.decode("utf-8-sig")
-    assert text.splitlines()[0].startswith("id;name;type;status")
-    assert "John Smith" in text
+    assert text.splitlines()[0].startswith("id;техника;тип;статус")
+    assert "Caterpillar 777 #7" in text
 
 
-def test_enrich_writes_labels_back(client):
-    """Без ключа разметка идёт заглушкой, но поля обязаны заполниться и сохраниться."""
-    created = client.post("/api/entities", json={"name": "Запись для разметки", "type": "заявка"}).json()
+def test_enrich_writes_risk_back(client):
+    """Без ключа разметка идёт заглушкой, но поля риска обязаны заполниться и сохраниться."""
+    created = client.post("/api/assets", json={"name": "БелАЗ для разметки", "type": "самосвал"}).json()
 
-    body = client.post("/api/ai/enrich", json={"entity_ids": [created["id"]], "limit": 1}).json()
+    body = client.post("/api/ai/enrich", json={"asset_ids": [created["id"]], "limit": 1}).json()
     assert body["processed"] == 1
     assert body["status"] == "fallback"
     assert body["rows"][0]["id"] == created["id"]
 
-    again = client.get(f"/api/entities/{created['id']}").json()
+    again = client.get(f"/api/assets/{created['id']}").json()
     assert again["ai_label"] is not None
     assert again["ai_score"] is not None
 
 
 def test_enrich_respects_hard_limit(client):
-    """Лимит записей за раз жёсткий: каждая запись — отдельный платный вызов."""
+    """Лимит за раз жёсткий: каждая единица техники — отдельный платный вызов."""
     body = client.post("/api/ai/enrich", json={"limit": 999}).json()
     assert body["processed"] <= 25

@@ -9,18 +9,34 @@ import json
 from app.ai.tools import tool_aggregate_metrics, tool_create_record, tool_query_records
 from app.auth import hash_password
 from app.db import SessionLocal
-from app.models import Entity, User
+from app.models import Asset, Event, User
 
 
 def _seed_minimal() -> None:
     db = SessionLocal()
     try:
         if db.query(User).count() == 0:
-            db.add(User(email="demo@hackalem.kz", name="Демо", role="admin", password_hash=hash_password("demo")))
-        if db.query(Entity).count() == 0:
+            db.add(User(email="demo@hackalem.kz", name="Демо", role="диспетчер", password_hash=hash_password("demo")))
+        if db.query(Asset).count() == 0:
             db.add_all(
-                Entity(name=f"Запись {i}", type="заявка", status="new" if i % 2 else "done", amount=1000.0 * i)
+                Asset(
+                    name=f"БелАЗ-75306 №{i}",
+                    type="самосвал",
+                    status="в работе" if i % 2 else "в ремонте",
+                    site="Разрез «Восточный»",
+                    engine_hours=1000.0 * i,
+                    output_tonnes=900.0,
+                )
                 for i in range(1, 6)
+            )
+            db.flush()
+        # Отдельная проверка: технику мог создать любой предыдущий тест, а событий
+        # при этом не быть — тогда агрегаты по events вернут пусто.
+        if db.query(Event).count() == 0:
+            asset = db.query(Asset).first()
+            db.add_all(
+                Event(asset_id=asset.id, type="отказ", downtime_hours=6.0, comment="течь гидравлики")
+                for _ in range(3)
             )
         db.commit()
     finally:
@@ -33,19 +49,21 @@ def test_health(client):
     assert response.json()["status"] == "ok"
 
 
-def test_entity_crud(client):
-    created = client.post("/api/entities", json={"name": "Тестовая заявка", "type": "заявка", "amount": 5000})
+def test_asset_crud(client):
+    created = client.post(
+        "/api/assets", json={"name": "Komatsu PC1250 №999", "type": "экскаватор", "engine_hours": 12000}
+    )
     assert created.status_code == 201
-    entity_id = created.json()["id"]
+    asset_id = created.json()["id"]
 
-    assert client.get(f"/api/entities/{entity_id}").json()["name"] == "Тестовая заявка"
-    assert any(row["id"] == entity_id for row in client.get("/api/entities").json())
+    assert client.get(f"/api/assets/{asset_id}").json()["name"] == "Komatsu PC1250 №999"
+    assert any(row["id"] == asset_id for row in client.get("/api/assets").json())
 
-    patched = client.patch(f"/api/entities/{entity_id}", json={"name": "Обновлено", "status": "done"})
-    assert patched.json()["status"] == "done"
+    patched = client.patch(f"/api/assets/{asset_id}", json={"name": "Обновлено", "status": "в ремонте"})
+    assert patched.json()["status"] == "в ремонте"
 
-    assert client.delete(f"/api/entities/{entity_id}").status_code == 204
-    assert client.get(f"/api/entities/{entity_id}").status_code == 404
+    assert client.delete(f"/api/assets/{asset_id}").status_code == 204
+    assert client.get(f"/api/assets/{asset_id}").status_code == 404
 
 
 def test_demo_auth(client):
@@ -65,7 +83,7 @@ def test_demo_auth(client):
 def test_dashboard(client):
     _seed_minimal()
     data = client.get("/api/dashboard?days=30").json()
-    assert len(data["cards"]) == 4
+    assert [card["key"] for card in data["cards"]] == ["readiness", "downtime", "breakdowns", "output"]
     assert isinstance(data["timeseries"], list)
 
 
@@ -74,24 +92,26 @@ def test_ai_tools_work_without_api():
     _seed_minimal()
     db = SessionLocal()
     try:
-        read = tool_query_records(db, table="entities", limit=3)
+        read = tool_query_records(db, table="assets", limit=3)
         assert read["count"] <= 3
 
-        created = tool_create_record(db, table="entities", name="Из инструмента", amount=777)
+        created = tool_create_record(db, table="assets", name="Из инструмента", engine_hours=500)
         assert created["created"] is True
 
-        total = tool_aggregate_metrics(db, table="entities", metric="count", group_by="none")
+        total = tool_aggregate_metrics(db, table="assets", metric="count", group_by="none")
         assert total["value"] >= 1
 
-        grouped = tool_aggregate_metrics(db, table="entities", metric="sum", group_by="status")
-        assert grouped["groups"]
+        downtime = tool_aggregate_metrics(
+            db, table="events", metric="sum", field="downtime_hours", group_by="type"
+        )
+        assert downtime["groups"]
     finally:
         db.close()
 
 
 def test_chat_falls_back_without_key(client):
     """Без OPENAI_API_KEY чат обязан отдать заглушку, а не 500."""
-    response = client.post("/api/ai/chat", json={"message": "Сколько записей в базе?"})
+    response = client.post("/api/ai/chat", json={"message": "Сколько техники в ремонте?"})
     assert response.status_code == 200
 
     events = [
@@ -106,10 +126,10 @@ def test_chat_falls_back_without_key(client):
 
 def test_structured_output_fallback_keeps_shape(client):
     """Даже без API structured output возвращает объект нужной формы."""
-    response = client.post("/api/ai/classify", json={"text": "Заказ не приехал, жду третий день"})
+    response = client.post("/api/ai/classify", json={"text": "БелАЗ 112 встал, течь гидравлики, стоим третий час"})
     body = response.json()
     assert body["status"] == "fallback"
-    assert set(body["data"]) == {"category", "priority", "sentiment", "reason", "tags"}
+    assert set(body["data"]) == {"category", "unit", "urgency", "downtime_hours_estimate", "reason"}
 
 
 def test_ai_metrics_logged(client):

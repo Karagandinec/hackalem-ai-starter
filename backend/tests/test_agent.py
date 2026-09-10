@@ -9,7 +9,7 @@ import json
 from app.ai import agent
 from app.ai.client import LlmResult
 from app.db import SessionLocal
-from app.models import Entity
+from app.models import Asset
 
 
 def _tool_call(name: str, arguments: dict, call_id: str = "call_1") -> LlmResult:
@@ -25,7 +25,7 @@ def test_agent_runs_tool_then_answers(monkeypatch):
     """Раунд 1 — инструмент, раунд 2 — готовый ответ. Лишних вызовов быть не должно."""
     db = SessionLocal()
     try:
-        db.add(Entity(name="Для агента", type="заявка", status="new", amount=100.0))
+        db.add(Asset(name="БелАЗ для агента", type="самосвал", status="в работе", engine_hours=15000.0))
         db.commit()
 
         calls = {"complete": 0, "stream": 0}
@@ -33,10 +33,10 @@ def test_agent_runs_tool_then_answers(monkeypatch):
         def fake_complete(_db, messages, **_kwargs):
             calls["complete"] += 1
             if calls["complete"] == 1:
-                return _tool_call("aggregate_metrics", {"table": "entities", "metric": "count", "group_by": "none"})
+                return _tool_call("aggregate_metrics", {"table": "assets", "metric": "count", "group_by": "none"})
             # Результат инструмента обязан быть в диалоге до финального ответа.
             assert any(m.get("role") == "tool" for m in messages)
-            return LlmResult(text="Записей: много", model="fake", total_tokens=42, status="ok")
+            return LlmResult(text="Единиц техники: много", model="fake", total_tokens=42, status="ok")
 
         def fake_stream(*_args, **_kwargs):
             calls["stream"] += 1
@@ -45,7 +45,7 @@ def test_agent_runs_tool_then_answers(monkeypatch):
         monkeypatch.setattr(agent, "llm_complete", fake_complete)
         monkeypatch.setattr(agent, "stream_text", fake_stream)
 
-        events = list(agent.run_agent_stream(db, "Сколько записей?"))
+        events = list(agent.run_agent_stream(db, "Сколько техники?"))
     finally:
         db.close()
 
@@ -55,7 +55,7 @@ def test_agent_runs_tool_then_answers(monkeypatch):
     assert tool_events[0]["round"] == 1
     assert tool_events[0]["result"]["value"] >= 1  # инструмент реально сходил в базу
 
-    assert "".join(e["text"] for e in events if e["type"] == "delta") == "Записей: много"
+    assert "".join(e["text"] for e in events if e["type"] == "delta") == "Единиц техники: много"
     assert events[-1]["meta"]["tools_used"] == ["aggregate_metrics"]
     assert calls["stream"] == 0  # финальный ответ уже был, стримить нечего
 
@@ -65,12 +65,12 @@ def test_agent_chains_several_rounds(monkeypatch):
     db = SessionLocal()
     try:
         sequence = [
-            _tool_call("aggregate_metrics", {"table": "entities", "metric": "count", "group_by": "status"}, "c1"),
-            _tool_call("query_records", {"table": "entities", "limit": 2}, "c2"),
+            _tool_call("aggregate_metrics", {"table": "assets", "metric": "count", "group_by": "status"}, "c1"),
+            _tool_call("query_records", {"table": "assets", "limit": 2}, "c2"),
             LlmResult(text="Готово", model="fake", status="ok"),
         ]
         monkeypatch.setattr(agent, "llm_complete", lambda *_a, **_kw: sequence.pop(0))
-        events = list(agent.run_agent_stream(db, "Разберись с воронкой"))
+        events = list(agent.run_agent_stream(db, "Разберись с простоями"))
     finally:
         db.close()
 
@@ -86,7 +86,7 @@ def test_agent_stops_after_round_limit(monkeypatch):
         monkeypatch.setattr(
             agent,
             "llm_complete",
-            lambda *_a, **_kw: _tool_call("query_records", {"table": "entities", "limit": 1}),
+            lambda *_a, **_kw: _tool_call("query_records", {"table": "assets", "limit": 1}),
         )
 
         def fake_stream(*_args, **_kwargs):
