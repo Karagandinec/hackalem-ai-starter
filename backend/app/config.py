@@ -27,10 +27,13 @@ class Settings(BaseSettings):
     seed_on_start: bool = False
 
     openai_api_key: str = ""
-    openai_model: str = "gpt-4o-mini"
+    openai_model: str = "gpt-5.6-sol"
+    # Только для рассуждающих моделей (gpt-5.x, gpt-6, o-серия): none — быстрее всего и не мешает инструментам.
+    # У gpt-6-astra минимум low, а инструменты вместе с усилием она принимает только в Responses API.
+    openai_reasoning_effort: str = "none"
     openai_timeout_seconds: float = 30.0
     openai_max_retries: int = 3
-    openai_max_output_tokens: int = 800
+    openai_max_output_tokens: int = 2000  # рассуждение тратит этот же лимит
 
     ai_cache_enabled: bool = True
     ai_cache_ttl_seconds: int = 3600

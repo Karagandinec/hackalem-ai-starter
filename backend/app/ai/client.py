@@ -31,12 +31,34 @@ PRICING: dict[str, tuple[float, float]] = {
     "gpt-4.1-mini": (0.40, 1.60),
     "gpt-4.1": (2.00, 8.00),
     "o4-mini": (1.10, 4.40),
+    # GPT-5.6 и GPT-6 — со страниц моделей на developers.openai.com, 11.09.2026.
+    "gpt-5.6-sol": (4.00, 20.00),
+    "gpt-5.6-terra": (2.00, 12.00),
+    "gpt-5.6-luna": (0.20, 1.20),
+    "gpt-6-astra": (10.00, 50.00),
 }
+
+# Рассуждающие модели отвечают 400 на temperature ≠ 1, зато принимают reasoning_effort.
+REASONING_MODEL_PREFIXES = ("gpt-5", "gpt-6", "o1", "o3", "o4")
+
+
+def is_reasoning_model(model: str) -> bool:
+    return model.startswith(REASONING_MODEL_PREFIXES)
 
 
 def estimate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
-    price_in, price_out = PRICING.get(model, (0.0, 0.0))
+    # API возвращает имя со снапшотом («gpt-4o-mini-2024-07-18») — ищем самое длинное совпавшее начало.
+    known = [name for name in PRICING if model.startswith(name)]
+    price_in, price_out = PRICING[max(known, key=len)] if known else (0.0, 0.0)
     return round(prompt_tokens / 1e6 * price_in + completion_tokens / 1e6 * price_out, 6)
+
+
+def _sampling_kwargs(temperature: float) -> dict:
+    """Обычной модели — temperature, рассуждающей — reasoning_effort из настроек (или ничего)."""
+    if not is_reasoning_model(settings.openai_model):
+        return {"temperature": temperature}
+    effort = settings.openai_reasoning_effort.strip()
+    return {"reasoning_effort": effort} if effort else {}
 
 
 @dataclass
@@ -203,13 +225,14 @@ def complete(
             log_call(db, purpose, prompt_repr, result)
         return result
 
+    sampling = _sampling_kwargs(temperature)
     key = _cache_key(
         {
             "model": settings.openai_model,
             "messages": messages,
             "schema": json_schema,
             "tools": [t["function"]["name"] for t in tools] if tools else None,
-            "temperature": temperature,
+            "sampling": sampling,
             "max_completion_tokens": max_tokens,
         }
     )
@@ -228,7 +251,7 @@ def complete(
     kwargs: dict = {
         "model": settings.openai_model,
         "messages": messages,
-        "temperature": temperature,
+        **sampling,
         # max_completion_tokens, а не max_tokens: старый параметр новые модели не принимают.
         "max_completion_tokens": max_tokens,
     }
@@ -317,7 +340,7 @@ def stream_text(
         stream = _client().chat.completions.create(
             model=settings.openai_model,
             messages=messages,
-            temperature=temperature,
+            **_sampling_kwargs(temperature),
             max_completion_tokens=max_tokens,
             stream=True,
             stream_options={"include_usage": True},

@@ -157,3 +157,42 @@ def test_root_serves_app_or_docs(client):
 def test_unknown_api_path_is_404(client):
     """Раздача фронта не должна проглатывать промахи по API: /api/* — всегда JSON."""
     assert client.get("/api/definitely-missing").status_code == 404
+
+
+def test_reasoning_model_gets_effort_instead_of_temperature(monkeypatch):
+    """gpt-5.x и gpt-6 отвечают 400 на temperature ≠ 1 — им уходит reasoning_effort.
+    Цена считается и по имени со снапшотом: API возвращает «gpt-4o-mini-2024-07-18»."""
+    from types import SimpleNamespace
+
+    from app.ai import client as llm
+    from app.config import settings
+
+    sent: list[dict] = []
+
+    def fake_create(**kwargs):
+        sent.append(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok", tool_calls=None))],
+            usage=SimpleNamespace(prompt_tokens=1000, completion_tokens=100, total_tokens=1100),
+            model=f"{kwargs['model']}-2026-09-01",
+        )
+
+    fake_openai = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create)))
+    monkeypatch.setattr(llm, "_client", lambda: fake_openai)
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+    monkeypatch.setattr(settings, "openai_reasoning_effort", "low")
+
+    db = SessionLocal()
+    try:
+        monkeypatch.setattr(settings, "openai_model", "gpt-5.6-sol")
+        sol = llm.complete(db, [{"role": "user", "content": "тест"}], temperature=0.2, use_cache=False)
+        monkeypatch.setattr(settings, "openai_model", "gpt-4o-mini")
+        mini = llm.complete(db, [{"role": "user", "content": "тест"}], temperature=0.2, use_cache=False)
+    finally:
+        db.close()
+
+    assert "temperature" not in sent[0] and sent[0]["reasoning_effort"] == "low"
+    assert sent[1]["temperature"] == 0.2 and "reasoning_effort" not in sent[1]
+    assert sol.status == mini.status == "ok"
+    assert sol.cost_usd == 0.006  # 1000 токенов по $4 и 100 по $20 за миллион
+    assert mini.cost_usd == 0.00021  # до правки имя со снапшотом давало $0
